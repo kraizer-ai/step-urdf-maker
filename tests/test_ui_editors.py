@@ -57,22 +57,18 @@ def test_continuous_joint_can_be_displayed() -> None:
     assert math.isclose(values["upper"], math.pi)
 
 
-def test_joint_editor_requests_plane_axis_and_can_flip_its_direction() -> None:
+def test_joint_editor_can_flip_axis_direction() -> None:
     _app()
     editor = JointEditorWidget()
     editor.set_link_names(["base", "wheel"])
     editor.set_joint(
         JointSpec("wheel_joint", "revolute", "base", "wheel", axis=(0, 0, 1))
     )
-    plane_requests: list[bool] = []
     previews: list[object] = []
-    editor.axisFromPlaneRequested.connect(lambda: plane_requests.append(True))
     editor.axisPreviewRequested.connect(previews.append)
 
-    editor.axis_from_plane.click()
     editor.flip_axis_button.click()
 
-    assert plane_requests == [True]
     np.testing.assert_allclose(editor.axis_editor.value(), (0.0, 0.0, -1.0))
     np.testing.assert_allclose(previews[-1], (0.0, 0.0, -1.0))
 
@@ -176,6 +172,8 @@ def test_generic_new_link_dialog_converts_units() -> None:
     dialog.parent_combo.setCurrentText("base_link")
     dialog.name_edit.setText("fork_carriage")
     dialog.type_combo.setCurrentText("revolute")
+    dialog.set_candidate_origin((0.4, -0.2, 0.1))
+    dialog.select_candidate_axis("Z")
     dialog.lower_spin.setValue(-90.0)
     dialog.upper_spin.setValue(45.0)
     values = dialog.values()
@@ -183,6 +181,8 @@ def test_generic_new_link_dialog_converts_units() -> None:
     assert values["link_name"] == "fork_carriage"
     assert values["parent"] == "base_link"
     assert values["joint_type"] == "revolute"
+    assert tuple(values["axis"]) == (0.0, 0.0, 1.0)
+    np.testing.assert_allclose(values["origin_xyz"], (0.4, -0.2, 0.1))
     assert math.isclose(values["lower"], -math.pi / 2.0)
     assert math.isclose(values["upper"], math.pi / 4.0)
 

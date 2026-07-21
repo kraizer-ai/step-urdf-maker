@@ -5,7 +5,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication
 
 from urdf_maker.model import ScenePart
-from urdf_maker.ui.viewport import ViewportWidget, _coplanar_region_geometry
+from urdf_maker.ui.viewport import ViewportWidget
 
 
 def _app() -> QApplication:
@@ -20,36 +20,6 @@ def _part(identifier: str) -> ScenePart:
         np.asarray(((0, 1, 2),), dtype=np.int64),
         color=(0.2, 0.3, 0.4, 1.0),
     )
-
-
-def test_coplanar_pick_uses_connected_face_center_and_normal() -> None:
-    vertices = np.asarray(
-        (
-            (0.0, 0.0, 0.0),
-            (1.0, 0.0, 0.0),
-            (1.0, 1.0, 0.0),
-            (0.0, 1.0, 0.0),
-            (1.0, 0.0, 1.0),
-            (3.0, 0.0, 0.0),
-            (4.0, 0.0, 0.0),
-            (3.0, 1.0, 0.0),
-        )
-    )
-    triangles = np.asarray(
-        (
-            (0, 1, 2),
-            (0, 2, 3),
-            (1, 4, 2),  # connected, but perpendicular to the picked plane
-            (5, 6, 7),  # coplanar, but disconnected from the picked face
-        ),
-        dtype=np.int64,
-    )
-
-    center, normal, count = _coplanar_region_geometry(vertices, triangles, 0)
-
-    np.testing.assert_allclose(center, (0.5, 0.5, 0.0))
-    np.testing.assert_allclose(normal, (0.0, 0.0, 1.0))
-    assert count == 2
 
 
 def test_transient_part_colors_preserve_selection_outline() -> None:
@@ -92,30 +62,40 @@ def test_transient_part_colors_preserve_selection_outline() -> None:
         app.processEvents()
 
 
-def test_surface_pick_result_includes_display_transform_and_pick_mode() -> None:
+def test_replacing_parts_preserves_camera_and_candidate_axes_can_be_highlighted() -> None:
     app = _app()
     viewport = ViewportWidget()
     try:
         viewport.set_parts([_part("one")])
-        transform = np.eye(4)
-        transform[:3, :3] = np.asarray(
-            ((1.0, 0.0, 0.0), (0.0, 0.0, -1.0), (0.0, 1.0, 0.0))
+        camera = viewport.renderer.GetActiveCamera()
+        camera.SetPosition(7.0, -5.0, 3.0)
+        camera.SetFocalPoint(0.4, 0.2, 0.1)
+        camera.SetViewUp(0.0, 0.0, 1.0)
+        camera.SetParallelScale(0.37)
+        before = viewport.capture_camera_state()
+
+        viewport.set_parts([_part("two")])
+        after = viewport.capture_camera_state()
+        np.testing.assert_allclose(after["position"], before["position"])
+        np.testing.assert_allclose(after["focal_point"], before["focal_point"])
+        assert np.isclose(after["parallel_scale"], before["parallel_scale"])
+
+        viewport.set_candidate_axes(
+            (0.5, 0.5, 0.0),
+            {"X": (1, 0, 0), "Y": (0, 1, 0), "Z": (0, 0, 1)},
+            0.25,
+            selected="Y",
         )
-        transform[:3, 3] = (2.0, 3.0, 4.0)
-        viewport.update_part_transforms({"one": transform})
-
-        picked = viewport._surface_pick_result("one", 0)
-        np.testing.assert_allclose(picked["center_zero"], (1 / 3, 1 / 3, 0.0))
-        np.testing.assert_allclose(picked["normal_zero"], (0.0, 0.0, 1.0))
-        np.testing.assert_allclose(picked["center_world"], (2 + 1 / 3, 3.0, 4 + 1 / 3))
-        np.testing.assert_allclose(picked["normal_world"], (0.0, -1.0, 0.0))
-
-        viewport.begin_surface_pick()
-        assert viewport.surface_pick_active()
-        assert "평면을 클릭" in viewport._shortcut_label.text()
-        viewport.cancel_surface_pick()
-        assert not viewport.surface_pick_active()
-        assert "Ctrl+H" in viewport._shortcut_label.text()
+        assert set(viewport._candidate_axis_actors) == {"X", "Y", "Z"}
+        assert (
+            viewport._candidate_axis_actors["Y"].GetProperty().GetLineWidth()
+            > viewport._candidate_axis_actors["X"].GetProperty().GetLineWidth()
+        )
+        viewport.highlight_candidate_axis("Z")
+        assert (
+            viewport._candidate_axis_actors["Z"].GetProperty().GetLineWidth()
+            > viewport._candidate_axis_actors["Y"].GetProperty().GetLineWidth()
+        )
     finally:
         viewport._vtk_widget.Finalize()
         viewport.close()

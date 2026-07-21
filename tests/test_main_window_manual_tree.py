@@ -6,6 +6,7 @@ import numpy as np
 from PySide6.QtWidgets import QApplication, QDialog, QDockWidget, QMessageBox
 
 from urdf_maker.model import JointSpec, LinkSpec, RobotProject, ScenePart
+from urdf_maker.ui.editors import NewLinkDialog
 from urdf_maker.ui.main_window import MainWindow, ROLE_ID, _stable_part_display_color
 
 
@@ -61,6 +62,20 @@ def test_maximize_keeps_one_attached_joint_inspector() -> None:
     finally:
         window.viewport._vtk_widget.Finalize()
         window.close()
+        window.deleteLater()
+        app.processEvents()
+
+
+def test_close_does_not_show_save_or_discard_prompt() -> None:
+    app = _app()
+    window = MainWindow()
+    try:
+        window._dirty = True
+        with patch("urdf_maker.ui.main_window.QMessageBox.question") as question:
+            assert window.close()
+        question.assert_not_called()
+    finally:
+        window.viewport._vtk_widget.Finalize()
         window.deleteLater()
         app.processEvents()
 
@@ -171,63 +186,58 @@ def test_revolute_axis_marker_passes_through_actual_joint_origin() -> None:
         app.processEvents()
 
 
-def test_picked_plane_sets_revolute_origin_and_axis_in_joint_coordinates() -> None:
+def test_new_child_preview_uses_selected_bundle_bbox_center_and_parent_context() -> None:
     app = _app()
     base = _part("base_part", 0.0)
-    moving = _part("moving_part", 2.0)
+    handle = _part("handle_part", 2.0)
     project = RobotProject(
-        "plane_axis",
-        parts=[base, moving],
-        links=[
-            LinkSpec("base_link", [base.id]),
-            LinkSpec("moving_link", [moving.id]),
-        ],
-        joints=[
-            JointSpec(
-                "moving_joint",
-                "revolute",
-                "base_link",
-                "moving_link",
-                origin_rpy=(0.0, 0.0, np.pi / 2.0),
-                axis=(1.0, 0.0, 0.0),
-                lower=-1.0,
-                upper=1.0,
-            )
-        ],
+        "candidate_axes",
+        parts=[base, handle],
+        links=[LinkSpec("base_link", [base.id])],
         root_link="base_link",
     )
     window = MainWindow()
+    dialog = None
     try:
         window._set_project(project, None)
-        window._select_link_item("moving_link")
-        window.use_picked_plane_for_axis(
-            {
-                "part_id": "moving_part",
-                "center_zero": np.asarray((0.25, -0.1, 0.4)),
-                "normal_zero": np.asarray((0.0, 1.0, 0.0)),
-                "center_world": np.asarray((0.25, -0.1, 0.4)),
-                "normal_world": np.asarray((0.0, 1.0, 0.0)),
-                "triangle_count": 8,
-            }
+        dialog = NewLinkDialog(
+            project.links.keys(),
+            default_parent="base_link",
+            selected_count=1,
+            parent=window,
+        )
+        window._preview_new_link_candidates(
+            dialog,
+            "base_link",
+            ["handle_part"],
         )
 
-        np.testing.assert_allclose(
-            window.joint_editor.origin_editor.value(),
-            (250.0, -100.0, 400.0),
+        expected_center = (handle.vertices_zero.min(axis=0) + handle.vertices_zero.max(axis=0)) * 0.5
+        np.testing.assert_allclose(dialog._candidate_origin, expected_center)
+        assert set(window.viewport._candidate_axis_actors) == {"X", "Y", "Z"}
+        assert window.viewport._parts["base_part"].actor.GetVisibility()
+        assert window.viewport._parts["handle_part"].actor.GetVisibility()
+        assert window.viewport.selected_ids() == ["handle_part"]
+
+        assert window._create_moving_link(
+            "handle_link",
+            ["handle_part"],
+            parent="base_link",
+            joint_name="handle_joint",
+            axis=(0.0, 0.0, 1.0),
+            origin_xyz=dialog._candidate_origin,
+            joint_type="revolute",
+            lower=-1.0,
+            upper=1.0,
         )
-        # With a +90 degree joint-frame yaw, world +Y is joint-frame +X.
         np.testing.assert_allclose(
-            window.joint_editor.axis_editor.value(),
-            (1.0, 0.0, 0.0),
-            atol=1.0e-4,
+            project.joint("handle_joint").origin_xyz,
+            expected_center,
         )
-        marker = window.viewport._axis_actor.GetUserMatrix()
-        np.testing.assert_allclose(
-            [marker.GetElement(index, 3) for index in range(3)],
-            (0.25, -0.1, 0.4),
-        )
-        assert "8개 삼각형" in window.statusBar().currentMessage()
     finally:
+        if dialog is not None:
+            dialog.close()
+            dialog.deleteLater()
         window.viewport._vtk_widget.Finalize()
         window.close()
         window.deleteLater()
@@ -295,9 +305,27 @@ def test_new_manual_tree_and_nested_children_follow_selected_parent() -> None:
         window.hide_assigned_action.setChecked(False)
         assert not window.assigned_visibility_check.isChecked()
         assert "base_part" in window.viewport._parts
+        camera = window.viewport.renderer.GetActiveCamera()
+        camera.SetPosition(5.0, -4.0, 2.5)
+        camera.SetFocalPoint(0.08, 0.03, 0.01)
+        camera.SetParallelScale(0.42)
+        camera_before_visibility = window.viewport.capture_camera_state()
         window.assigned_visibility_check.setChecked(True)
         assert window.hide_assigned_action.isChecked()
         assert "base_part" not in window.viewport._parts
+        camera_after_visibility = window.viewport.capture_camera_state()
+        np.testing.assert_allclose(
+            camera_after_visibility["position"],
+            camera_before_visibility["position"],
+        )
+        np.testing.assert_allclose(
+            camera_after_visibility["focal_point"],
+            camera_before_visibility["focal_point"],
+        )
+        assert np.isclose(
+            camera_after_visibility["parallel_scale"],
+            camera_before_visibility["parallel_scale"],
+        )
 
         assert window._create_moving_link(
             "left_hand",
@@ -348,6 +376,9 @@ def test_new_manual_tree_and_nested_children_follow_selected_parent() -> None:
         assert "0:0 → 1:120 mm" in root_item.child(0).text(1)
 
         window.current_link = "left_hand"
+        camera.SetPosition(3.2, -2.1, 1.7)
+        camera.SetFocalPoint(0.1, 0.05, 0.0)
+        camera_before_dialog = window.viewport.capture_camera_state()
         with patch("urdf_maker.ui.main_window.NewLinkDialog") as dialog_class:
             dialog = dialog_class.return_value
             dialog.exec.return_value = QDialog.DialogCode.Accepted
@@ -360,6 +391,16 @@ def test_new_manual_tree_and_nested_children_follow_selected_parent() -> None:
                 "upper": 0.12,
             }
             window.add_child_link_from_selection()
+
+        camera_after_dialog = window.viewport.capture_camera_state()
+        np.testing.assert_allclose(
+            camera_after_dialog["position"],
+            camera_before_dialog["position"],
+        )
+        np.testing.assert_allclose(
+            camera_after_dialog["focal_point"],
+            camera_before_dialog["focal_point"],
+        )
 
         assert dialog_class.call_args.kwargs["default_parent"] == "left_hand"
         assert dialog_class.call_args.kwargs["lock_parent"] is False

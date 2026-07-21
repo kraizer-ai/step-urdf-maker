@@ -328,7 +328,6 @@ class MainWindow(QMainWindow):
         self.viewport = ViewportWidget()
         self.viewport.partsSelectionChanged.connect(self._viewport_selection_changed)
         self.viewport.animationToggled.connect(self._set_demo_playing)
-        self.viewport.surfacePicked.connect(self.use_picked_plane_for_axis)
         splitter.addWidget(self.viewport)
 
         right_contents = QWidget()
@@ -346,7 +345,6 @@ class MainWindow(QMainWindow):
         self.joint_editor.applyRequested.connect(self.apply_joint_values)
         self.joint_editor.positionChanged.connect(self.set_current_joint_position)
         self.joint_editor.originFromSelectionRequested.connect(self.use_selection_center_for_origin)
-        self.joint_editor.axisFromPlaneRequested.connect(self.begin_axis_from_plane)
         self.joint_editor.axisPreviewRequested.connect(self.preview_joint_axis)
         right_layout.addWidget(self.joint_editor)
         right_layout.addStretch(1)
@@ -833,7 +831,12 @@ class MainWindow(QMainWindow):
             return f"연속 회전 {axis_text}"
         return joint.type
 
-    def _rebuild_viewport(self, selection: Iterable[str] = ()) -> None:
+    def _rebuild_viewport(
+        self,
+        selection: Iterable[str] = (),
+        *,
+        include_assigned: bool = False,
+    ) -> None:
         if self.project is None:
             self.viewport.clear()
             return
@@ -841,7 +844,11 @@ class MainWindow(QMainWindow):
             part
             for part in self.project.parts.values()
             if part.visible
-            and not (self._hide_assigned_parts and part.link_name is not None)
+            and not (
+                self._hide_assigned_parts
+                and not include_assigned
+                and part.link_name is not None
+            )
         ]
         self.viewport.set_parts(visible_parts)
         if self.part_colors_action.isChecked():
@@ -1299,7 +1306,30 @@ class MainWindow(QMainWindow):
             lock_parent=False,
             parent=self,
         )
-        if dialog.exec() != QDialog.DialogCode.Accepted:
+        previous_camera = self.viewport.capture_camera_state()
+        previous_selection = list(part_ids)
+
+        def preview_parent(parent_name: str) -> None:
+            self._preview_new_link_candidates(dialog, parent_name, part_ids)
+
+        def preview_axis(axis: Iterable[float]) -> None:
+            vector = np.asarray(axis, dtype=float)
+            if vector.shape == (3,) and np.linalg.norm(vector) > 1.0e-12:
+                name = "XYZ"[int(np.argmax(np.abs(vector)))]
+                self.viewport.highlight_candidate_axis(name)
+
+        dialog.parentPreviewRequested.connect(preview_parent)
+        dialog.axisPreviewRequested.connect(preview_axis)
+        accepted = False
+        try:
+            self._rebuild_viewport(part_ids, include_assigned=True)
+            preview_parent(parent)
+            accepted = dialog.exec() == QDialog.DialogCode.Accepted
+        finally:
+            self.viewport.clear_candidate_axes(render=False)
+            self._rebuild_viewport(previous_selection)
+            self.viewport.restore_camera_state(previous_camera)
+        if not accepted:
             return
         try:
             values = dialog.values()
@@ -1316,6 +1346,7 @@ class MainWindow(QMainWindow):
             parent=values["parent"],
             joint_name=f"{link_name}_joint",
             axis=values["axis"],
+            origin_xyz=values.get("origin_xyz"),
             joint_type=values["joint_type"],
             lower=values["lower"],
             upper=values["upper"],
@@ -1323,6 +1354,88 @@ class MainWindow(QMainWindow):
         )
         if created:
             self.left_tabs.setCurrentIndex(1)
+
+    def _preview_new_link_candidates(
+        self,
+        dialog: NewLinkDialog,
+        parent: str,
+        child_part_ids: Iterable[str],
+    ) -> None:
+        """Focus one parent link and show BBox-centered local axis candidates."""
+
+        if self.project is None or parent not in self.project.links:
+            return
+        context_ids = [
+            part_id
+            for part_id in self.project.links[parent].part_ids
+            if part_id in self.project.parts and self.project.parts[part_id].visible
+        ]
+        selected_ids = [
+            part_id
+            for part_id in child_part_ids
+            if part_id in self.project.parts
+            and self.project.parts[part_id].visible
+        ]
+        center_ids = selected_ids or context_ids
+        if not center_ids:
+            return
+        try:
+            zero_fk = self.project.forward_kinematics(zero=True)
+            current_fk = self.project.forward_kinematics()
+            parent_zero = zero_fk[parent]
+            parent_current = current_fk[parent]
+            center_zero = self._parts_center(center_ids)
+            center_parent = apply_transform(
+                center_zero.reshape(1, 3),
+                np.linalg.inv(parent_zero),
+            )[0]
+            center_current = apply_transform(
+                center_parent.reshape(1, 3),
+                parent_current,
+            )[0]
+        except (KeyError, ValueError, np.linalg.LinAlgError):
+            return
+
+        vertices = [
+            self.project.parts[part_id].vertices_zero
+            for part_id in context_ids
+            if len(self.project.parts[part_id].vertices_zero)
+        ]
+        if vertices:
+            lower = np.min([value.min(axis=0) for value in vertices], axis=0)
+            upper = np.max([value.max(axis=0) for value in vertices], axis=0)
+            length = max(float(np.linalg.norm(upper - lower)) * 0.28, 0.01)
+        else:
+            length = max(self._scene_scale * 0.15, 0.01)
+
+        dialog.set_candidate_origin(center_parent)
+        local_axes = np.eye(3, dtype=float)
+        directions = {
+            name: parent_current[:3, :3] @ local_axes[:, index]
+            for index, name in enumerate("XYZ")
+        }
+        try:
+            editor_axis = np.asarray(dialog.axis_editor.value(), dtype=float)
+        except (TypeError, ValueError):
+            editor_axis = np.asarray((1.0, 0.0, 0.0))
+        selected_name = (
+            "XYZ"[int(np.argmax(np.abs(editor_axis)))]
+            if editor_axis.shape == (3,)
+            else "X"
+        )
+        self.viewport.clear_candidate_axes(render=False)
+        self.viewport.set_isolated_parts([*context_ids, *selected_ids])
+        self.viewport.set_selected(selected_ids)
+        self.viewport.set_candidate_axes(
+            center_current,
+            directions,
+            length,
+            selected=selected_name,
+        )
+        self.viewport.frame_all()
+        self.statusBar().showMessage(
+            "부모 링크를 확대했습니다. 빨강 X · 초록 Y · 파랑 Z 후보축을 선택하세요."
+        )
 
     def _create_moving_link(
         self,
@@ -1332,6 +1445,7 @@ class MainWindow(QMainWindow):
         parent: str | None,
         joint_name: str,
         axis: Iterable[float],
+        origin_xyz: Iterable[float] | None = None,
         joint_type: str = "prismatic",
         lower: float | None = None,
         upper: float | None = None,
@@ -1409,7 +1523,16 @@ class MainWindow(QMainWindow):
         except Exception as exc:
             QMessageBox.warning(self, "링크 생성 실패", str(exc))
             return False
-        if identifiers:
+        if origin_xyz is not None:
+            origin_parent = np.asarray(tuple(origin_xyz), dtype=float)
+            if origin_parent.shape != (3,) or not np.all(np.isfinite(origin_parent)):
+                QMessageBox.warning(
+                    self,
+                    "링크 생성 실패",
+                    "후보 회전축 원점이 올바르지 않습니다.",
+                )
+                return False
+        elif identifiers:
             origin_world = self._parts_center(identifiers)
             origin_parent = apply_transform(
                 origin_world.reshape(1, 3), np.linalg.inv(parent_zero)
@@ -1666,75 +1789,6 @@ class MainWindow(QMainWindow):
         )[0]
         self.joint_editor.set_origin_mm(center_parent * 1000.0)
 
-    def begin_axis_from_plane(self) -> None:
-        """Arm a one-shot viewport pick for a planar joint center and axis."""
-
-        if self.project is None or self.current_joint is None:
-            QMessageBox.information(self, "관절 선택 필요", "회전축을 설정할 관절을 선택하세요.")
-            return
-        kind = self.joint_editor.type_combo.currentText()
-        if kind not in {"prismatic", "revolute", "continuous"}:
-            QMessageBox.information(
-                self,
-                "가동 관절 필요",
-                "동작 종류를 prismatic, revolute 또는 continuous로 설정하세요.",
-            )
-            return
-        self.viewport.begin_surface_pick()
-        self.statusBar().showMessage(
-            "3D 화면에서 축 기준으로 사용할 평면을 클릭하세요. Esc를 누르면 취소됩니다."
-        )
-
-    def use_picked_plane_for_axis(self, picked: dict[str, Any]) -> None:
-        """Load a picked planar region's center and normal into the editor."""
-
-        if self.project is None or self.current_joint is None:
-            return
-        try:
-            joint = self.project.joint(self.current_joint)
-            center_zero = np.asarray(picked["center_zero"], dtype=float)
-            normal_zero = np.asarray(picked["normal_zero"], dtype=float)
-            center_world = np.asarray(picked["center_world"], dtype=float)
-            normal_world = np.asarray(picked["normal_world"], dtype=float)
-            if any(value.shape != (3,) for value in (
-                center_zero,
-                normal_zero,
-                center_world,
-                normal_world,
-            )):
-                raise ValueError("선택 평면 좌표가 올바르지 않습니다.")
-            parent_zero = self.project.forward_kinematics(zero=True)[joint.parent]
-            center_parent = apply_transform(
-                center_zero.reshape(1, 3),
-                np.linalg.inv(parent_zero),
-            )[0]
-            joint_rotation_zero = parent_zero[:3, :3] @ rpy_matrix(joint.origin_rpy)
-            axis_joint = np.linalg.solve(joint_rotation_zero, normal_zero)
-            axis_joint /= np.linalg.norm(axis_joint)
-            normal_world /= np.linalg.norm(normal_world)
-        except (KeyError, ValueError, np.linalg.LinAlgError) as exc:
-            QMessageBox.warning(self, "평면 축 설정 실패", str(exc))
-            return
-
-        self.joint_editor.set_origin_mm(center_parent * 1000.0)
-        self.joint_editor.set_axis(axis_joint)
-        rotational = self.joint_editor.type_combo.currentText() in {
-            "revolute",
-            "continuous",
-        }
-        self.viewport.set_axis_marker(
-            center_world,
-            normal_world,
-            self._scene_scale * (0.28 if rotational else 0.18),
-            bidirectional=rotational,
-        )
-        count = int(picked.get("triangle_count", 1))
-        self.statusBar().showMessage(
-            f"평면 중심·노멀을 가져왔습니다 ({count}개 삼각형). "
-            "필요하면 방향 반전을 누른 뒤 동작 설정 적용을 누르세요.",
-            12000,
-        )
-
     def preview_joint_axis(self, axis: Iterable[float]) -> None:
         """Preview an editor axis shortcut or direction flip before applying."""
 
@@ -1835,10 +1889,10 @@ class MainWindow(QMainWindow):
             )
             event.ignore()
             return
-        if self._confirm_discard_changes():
-            event.accept()
-        else:
-            event.ignore()
+        # Closing the application is immediate. Saving remains an explicit
+        # Ctrl+S/File-menu action; repeated Save/Discard prompts made ordinary
+        # preview and test sessions unnecessarily intrusive.
+        event.accept()
 
     def dragEnterEvent(self, event: QDragEnterEvent) -> None:  # noqa: N802 - Qt API
         urls = event.mimeData().urls()

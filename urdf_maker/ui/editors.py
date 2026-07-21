@@ -73,6 +73,9 @@ class _NoWheelSlider(QSlider):
 class NewLinkDialog(QDialog):
     """Create one child link and define its incoming joint motion."""
 
+    parentPreviewRequested = Signal(str)
+    axisPreviewRequested = Signal(object)
+
     def __init__(
         self,
         link_names: Iterable[str],
@@ -83,6 +86,7 @@ class NewLinkDialog(QDialog):
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
+        self._candidate_origin: np.ndarray | None = None
         self.setWindowTitle("자식 링크와 동작 만들기")
         self.setMinimumWidth(380)
         root = QVBoxLayout(self)
@@ -121,6 +125,11 @@ class NewLinkDialog(QDialog):
         axis_layout.setContentsMargins(0, 0, 0, 0)
         axis_layout.addWidget(self.axis_editor)
         shortcuts = QGridLayout()
+        axis_colors = {
+            "X": "#dc4943",
+            "Y": "#38b95a",
+            "Z": "#4b7fe8",
+        }
         for index, (label, vector) in enumerate(
             (
                 ("+X", (1, 0, 0)),
@@ -132,9 +141,20 @@ class NewLinkDialog(QDialog):
             )
         ):
             button = QPushButton(label)
-            button.clicked.connect(lambda _checked=False, value=vector: self.axis_editor.setValue(value))
+            button.setStyleSheet(
+                f"QPushButton {{ border: 2px solid {axis_colors[label[-1]]}; }}"
+            )
+            button.clicked.connect(
+                lambda _checked=False, value=vector: self._choose_candidate_axis(value)
+            )
             shortcuts.addWidget(button, index % 2, index // 2)
         axis_layout.addLayout(shortcuts)
+        axis_hint = QLabel(
+            "3D의 빨강 X · 초록 Y · 파랑 Z 후보축과 같은 방향입니다. "
+            "축의 반대 회전은 − 버튼을 선택하세요."
+        )
+        axis_hint.setWordWrap(True)
+        axis_layout.addWidget(axis_hint)
 
         limit_box = QWidget()
         limit_layout = QHBoxLayout(limit_box)
@@ -166,7 +186,29 @@ class NewLinkDialog(QDialog):
         self.buttons.rejected.connect(self.reject)
         root.addWidget(self.buttons)
         self.type_combo.currentTextChanged.connect(self._refresh_type)
+        self.parent_combo.currentTextChanged.connect(self.parentPreviewRequested.emit)
+        self.axis_editor.valueChanged.connect(self.axisPreviewRequested.emit)
         self._refresh_type(self.type_combo.currentText())
+
+    def set_candidate_origin(self, value: Iterable[float]) -> None:
+        origin = np.asarray(tuple(value), dtype=float)
+        if origin.shape != (3,) or not np.all(np.isfinite(origin)):
+            raise ValueError("Candidate origin must contain three finite values")
+        self._candidate_origin = origin
+
+    def select_candidate_axis(self, name: str) -> None:
+        vectors = {
+            "X": (1.0, 0.0, 0.0),
+            "Y": (0.0, 1.0, 0.0),
+            "Z": (0.0, 0.0, 1.0),
+        }
+        axis = str(name).upper().lstrip("+-")
+        if axis in vectors:
+            self._choose_candidate_axis(vectors[axis])
+
+    def _choose_candidate_axis(self, value: Iterable[float]) -> None:
+        self.axis_editor.setValue(value)
+        self.axisPreviewRequested.emit(self.axis_editor.value())
 
     def _refresh_type(self, joint_type: str) -> None:
         scalar = joint_type in {"prismatic", "revolute", "continuous"}
@@ -197,6 +239,11 @@ class NewLinkDialog(QDialog):
             "parent": self.parent_combo.currentText(),
             "joint_type": kind,
             "axis": axis,
+            "origin_xyz": (
+                None
+                if self._candidate_origin is None
+                else self._candidate_origin.copy()
+            ),
             "lower": lower,
             "upper": upper,
         }
@@ -250,7 +297,6 @@ class JointEditorWidget(QGroupBox):
     applyRequested = Signal(object)
     positionChanged = Signal(float)
     originFromSelectionRequested = Signal()
-    axisFromPlaneRequested = Signal()
     axisPreviewRequested = Signal(object)
 
     def __init__(self, parent: QWidget | None = None) -> None:
@@ -336,19 +382,10 @@ class JointEditorWidget(QGroupBox):
         for column in range(3):
             shortcut_layout.setColumnStretch(column, 1)
         axis_layout.addLayout(shortcut_layout)
-        plane_layout = QHBoxLayout()
-        plane_layout.setContentsMargins(0, 0, 0, 0)
-        self.axis_from_plane = QPushButton("3D 평면에서 중심축 선택")
-        self.axis_from_plane.setToolTip(
-            "다음에 클릭한 평면의 중심을 관절 원점으로, 평면 노멀을 회전축으로 사용합니다."
-        )
-        self.axis_from_plane.clicked.connect(self.axisFromPlaneRequested)
-        plane_layout.addWidget(self.axis_from_plane, 1)
         self.flip_axis_button = QPushButton("방향 반전")
         self.flip_axis_button.setToolTip("현재 축의 부호를 반대로 바꿉니다.")
         self.flip_axis_button.clicked.connect(self._flip_axis)
-        plane_layout.addWidget(self.flip_axis_button)
-        axis_layout.addLayout(plane_layout)
+        axis_layout.addWidget(self.flip_axis_button)
         form.addRow("이동/회전 방향", axis_row)
 
         limits = QWidget()
@@ -557,7 +594,6 @@ class JointEditorWidget(QGroupBox):
         self.step_units.setText(units)
         self.preview_box.setEnabled(kind in {"prismatic", "revolute", "continuous"})
         scalar = kind in {"prismatic", "revolute", "continuous"}
-        self.axis_from_plane.setEnabled(scalar)
         self.flip_axis_button.setEnabled(scalar)
         self._refresh_position_range()
 
