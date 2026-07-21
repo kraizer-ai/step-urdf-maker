@@ -13,3 +13,4 @@ data/*.zip
 data/*/
 artifacts/*
 !artifacts/urdf-demo-cover.jpg
+!artifacts/urdf-demo.gif
