@@ -15,6 +15,7 @@ from urdf_maker.runtime_log import (
 from urdf_maker.step_subprocess import (
     IsolatedStepLoadError,
     _native_exit_hint,
+    _worker_command,
     load_step_project_isolated,
     run_step_import_isolated,
 )
@@ -50,6 +51,22 @@ def test_missing_native_procedure_has_recovery_hint() -> None:
     hint = _native_exit_hint(0xC06D007F)
     assert "setup.ps1" in hint
     assert _native_exit_hint(2) == ""
+
+
+def test_frozen_worker_relaunches_application(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = [tmp_path / name for name in ("request", "result", "error", "stage")]
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "executable", str(tmp_path / "STEP_URDF_Maker.exe"))
+
+    command = _worker_command(*paths)
+
+    assert command == [
+        sys.executable,
+        "--step-worker",
+        *(str(path) for path in paths),
+    ]
 
 
 def test_isolated_worker_returns_robot_project(tmp_path: Path) -> None:

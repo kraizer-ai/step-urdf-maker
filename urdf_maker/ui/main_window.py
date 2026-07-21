@@ -874,10 +874,21 @@ class MainWindow(QMainWindow):
             current_fk = current_fk or self.project.forward_kinematics()
             frame = current_fk[joint.parent] @ joint.origin_transform()
             direction = frame[:3, :3] @ (joint.axis / np.linalg.norm(joint.axis))
-            marker_origin = self._current_link_bbox_center(current_fk)
-            if marker_origin is None:
+            rotational = joint.type in {"revolute", "continuous"}
+            if rotational:
+                # A rotation axis is the line through the joint origin, not a
+                # convenient arrow placed at the selected link's BBox center.
                 marker_origin = frame[:3, 3]
-            self.viewport.set_axis_marker(marker_origin, direction, self._scene_scale * 0.18)
+            else:
+                marker_origin = self._current_link_bbox_center(current_fk)
+                if marker_origin is None:
+                    marker_origin = frame[:3, 3]
+            self.viewport.set_axis_marker(
+                marker_origin,
+                direction,
+                self._scene_scale * (0.28 if rotational else 0.18),
+                bidirectional=rotational,
+            )
         except Exception:
             self.viewport.clear_axis_marker()
 

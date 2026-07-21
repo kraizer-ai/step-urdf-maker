@@ -54,7 +54,7 @@ try:
     from vtkmodules.vtkCommonMath import vtkMatrix4x4
     from vtkmodules.vtkFiltersCore import vtkPolyDataNormals
     from vtkmodules.vtkFiltersHybrid import vtkPolyDataSilhouette
-    from vtkmodules.vtkFiltersSources import vtkArrowSource
+    from vtkmodules.vtkFiltersSources import vtkArrowSource, vtkLineSource
     from vtkmodules.vtkInteractionStyle import vtkInteractorStyleTrackballCamera
     from vtkmodules.vtkInteractionWidgets import vtkOrientationMarkerWidget
     from vtkmodules.vtkRenderingAnnotation import vtkAxesActor
@@ -381,7 +381,8 @@ else:
             self._has_framed = False
 
             self._axis_actor: vtkActor | None = None
-            self._axis_source: vtkArrowSource | None = None
+            self._axis_source: vtkArrowSource | vtkLineSource | None = None
+            self._axis_bidirectional = False
 
             # Give both the main renderer and the orientation marker a valid
             # non-polar camera from their first render. Setting Z-up while the
@@ -644,8 +645,10 @@ else:
             origin: Any,
             direction: Any,
             length: float,
+            *,
+            bidirectional: bool = False,
         ) -> None:
-            """Show a non-pickable arrow for the joint axis in world space."""
+            """Show a joint direction arrow or a centered rotation-axis line."""
 
             origin_vector = np.asarray(origin, dtype=np.float64).reshape(-1)
             direction_vector = np.asarray(direction, dtype=np.float64).reshape(-1)
@@ -680,13 +683,29 @@ else:
             transform[:3, 2] = basis_z * marker_length
             transform[:3, 3] = origin_vector
 
+            marker_is_bidirectional = bool(bidirectional)
+            if (
+                self._axis_actor is not None
+                and self._axis_bidirectional != marker_is_bidirectional
+            ):
+                self._selection_renderer.RemoveActor(self._axis_actor)
+                self._axis_actor = None
+                self._axis_source = None
+
             if self._axis_actor is None:
-                self._axis_source = vtkArrowSource()
-                self._axis_source.SetShaftResolution(24)
-                self._axis_source.SetTipResolution(32)
-                self._axis_source.SetShaftRadius(0.022)
-                self._axis_source.SetTipRadius(0.070)
-                self._axis_source.SetTipLength(0.28)
+                if marker_is_bidirectional:
+                    line = vtkLineSource()
+                    line.SetPoint1(-1.0, 0.0, 0.0)
+                    line.SetPoint2(1.0, 0.0, 0.0)
+                    self._axis_source = line
+                else:
+                    arrow = vtkArrowSource()
+                    arrow.SetShaftResolution(24)
+                    arrow.SetTipResolution(32)
+                    arrow.SetShaftRadius(0.022)
+                    arrow.SetTipRadius(0.070)
+                    arrow.SetTipLength(0.28)
+                    self._axis_source = arrow
 
                 mapper = vtkPolyDataMapper()
                 mapper.SetInputConnection(self._axis_source.GetOutputPort())
@@ -696,7 +715,11 @@ else:
                 self._axis_actor.GetProperty().SetColor(1.0, 0.20, 0.08)
                 self._axis_actor.GetProperty().SetAmbient(0.35)
                 self._axis_actor.GetProperty().SetDiffuse(0.75)
+                if marker_is_bidirectional:
+                    self._axis_actor.GetProperty().SetLineWidth(5.0)
+                    self._axis_actor.GetProperty().SetRenderLinesAsTubes(True)
                 self._selection_renderer.AddActor(self._axis_actor)
+                self._axis_bidirectional = marker_is_bidirectional
 
             self._axis_actor.SetUserMatrix(_vtk_matrix(transform))
             self._axis_actor.SetVisibility(True)
@@ -710,6 +733,7 @@ else:
                 self._selection_renderer.RemoveActor(self._axis_actor)
                 self._axis_actor = None
                 self._axis_source = None
+                self._axis_bidirectional = False
                 self._renderer.ResetCameraClippingRange()
                 self._render()
 
@@ -722,6 +746,7 @@ else:
                 self._selection_renderer.RemoveActor(self._axis_actor)
                 self._axis_actor = None
                 self._axis_source = None
+                self._axis_bidirectional = False
             self._selected = []
             self._color_overrides.clear()
             self._has_framed = False

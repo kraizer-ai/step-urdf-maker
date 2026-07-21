@@ -222,6 +222,15 @@ def _worker_command(
     error_path: Path,
     stage_path: Path,
 ) -> list[str]:
+    if getattr(sys, "frozen", False):
+        return [
+            sys.executable,
+            "--step-worker",
+            str(request_path),
+            str(result_path),
+            str(error_path),
+            str(stage_path),
+        ]
     return [
         console_python_executable(),
         "-m",

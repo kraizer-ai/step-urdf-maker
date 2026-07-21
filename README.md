@@ -1,14 +1,10 @@
 # STEP URDF Maker
 
-<p align="center">
-  <a href="./urdf.mp4">
-    <img src="./artifacts/urdf-demo-cover.jpg" alt="STEP URDF Maker demo" width="100%">
-  </a>
-</p>
+https://github.com/kraizer-ai/step-urdf-maker/raw/refs/heads/main/urdf.mp4#t=0.001
 
-<p align="center"><strong>▶ 이미지를 클릭하면 대표 데모 영상 urdf.mp4가 열립니다.</strong></p>
+> 위 플레이어에서 STEP 로딩, 링크 구성, 관절 동작과 URDF 내보내기 데모를 바로 재생할 수 있습니다.
 
-임의의 STEP 어셈블리에 들어 있는 CAD 부품을 사용자가 기능별 URDF 링크로 직접 구성하고, 관절 위치를 즉시 시험한 뒤 ROS용 URDF 패키지로 내보내는 Windows 데스크톱 도구입니다. 기존 URDF와 편집 프로젝트도 다시 불러올 수 있습니다.
+임의의 STEP 어셈블리에 들어 있는 CAD 부품을 사용자가 기능별 URDF 링크로 직접 구성하고, 관절 위치를 즉시 시험한 뒤 ROS용 URDF 패키지로 내보내는 Windows 및 Linux 데스크톱 도구입니다. 기존 URDF와 편집 프로젝트도 다시 불러올 수 있습니다.
 
 ## 주요 기능
 
@@ -24,7 +20,17 @@
 
 STEP에서 읽은 형상은 프로그램 내부에서 미터 단위로 통일됩니다. 포함된 WSR STEP은 58개 배치 부품으로 복원되며, UI에서는 1 mm 메시 공차로 로딩합니다.
 
-## 설치
+## Portable 배포본
+
+GitHub Releases에서는 다음 세 종류의 압축 파일을 제공합니다.
+
+- `windows-x64.zip`: 압축을 풀고 `STEP_URDF_Maker.exe` 실행
+- `linux-x64.tar.gz`: 압축을 풀고 `./STEP_URDF_Maker.sh` 실행
+- `linux-arm64.tar.gz`: ARM64 Linux에서 `./STEP_URDF_Maker.sh` 실행
+
+Portable 배포본에는 Python과 모든 애플리케이션 라이브러리가 포함되므로 Conda나 Python을 별도로 설치할 필요가 없습니다. Linux 배포본은 Ubuntu 24.04 이상과 OpenGL을 지원하는 데스크톱 환경을 기준으로 빌드됩니다. 각 Git 태그를 푸시하면 GitHub Actions가 세 플랫폼에서 직접 빌드·테스트한 뒤 해당 태그의 Release에 압축 파일을 자동 첨부합니다.
+
+## 소스 설치
 
 Windows PowerShell과 `conda` 명령을 사용할 수 있는 Miniconda 또는 Anaconda가 필요합니다. 프로젝트 루트에서 다음을 실행합니다.
 

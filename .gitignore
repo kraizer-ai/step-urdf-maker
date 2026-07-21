@@ -5,6 +5,7 @@ __pycache__/
 .venv-incomplete/
 build/
 dist/
+release/
 *.egg-info/
 *.urdfmaker.autosave.json
 *.log

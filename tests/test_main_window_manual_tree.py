@@ -127,6 +127,50 @@ def test_link_selection_centers_axis_marker_and_demo_restores_position() -> None
         app.processEvents()
 
 
+def test_revolute_axis_marker_passes_through_actual_joint_origin() -> None:
+    app = _app()
+    base = _part("base_part", 0.0)
+    moving = _part("moving_part", 2.0)
+    origin = np.asarray((0.45, -0.2, 0.3))
+    project = RobotProject(
+        "rotation_axis",
+        parts=[base, moving],
+        links=[
+            LinkSpec("base_link", [base.id]),
+            LinkSpec("moving_link", [moving.id]),
+        ],
+        joints=[
+            JointSpec(
+                "moving_joint",
+                "revolute",
+                "base_link",
+                "moving_link",
+                origin_xyz=origin,
+                axis=(0.0, 0.0, 1.0),
+                lower=-1.0,
+                upper=1.0,
+            )
+        ],
+        root_link="base_link",
+    )
+    window = MainWindow()
+    try:
+        window._set_project(project, None)
+        window._select_link_item("moving_link")
+
+        matrix = window.viewport._axis_actor.GetUserMatrix()
+        np.testing.assert_allclose(
+            [matrix.GetElement(index, 3) for index in range(3)],
+            origin,
+        )
+        assert window.viewport._axis_bidirectional is True
+    finally:
+        window.viewport._vtk_widget.Finalize()
+        window.close()
+        window.deleteLater()
+        app.processEvents()
+
+
 def test_new_manual_tree_and_nested_children_follow_selected_parent() -> None:
     _app()
     parts = [
