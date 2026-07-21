@@ -171,6 +171,69 @@ def test_revolute_axis_marker_passes_through_actual_joint_origin() -> None:
         app.processEvents()
 
 
+def test_picked_plane_sets_revolute_origin_and_axis_in_joint_coordinates() -> None:
+    app = _app()
+    base = _part("base_part", 0.0)
+    moving = _part("moving_part", 2.0)
+    project = RobotProject(
+        "plane_axis",
+        parts=[base, moving],
+        links=[
+            LinkSpec("base_link", [base.id]),
+            LinkSpec("moving_link", [moving.id]),
+        ],
+        joints=[
+            JointSpec(
+                "moving_joint",
+                "revolute",
+                "base_link",
+                "moving_link",
+                origin_rpy=(0.0, 0.0, np.pi / 2.0),
+                axis=(1.0, 0.0, 0.0),
+                lower=-1.0,
+                upper=1.0,
+            )
+        ],
+        root_link="base_link",
+    )
+    window = MainWindow()
+    try:
+        window._set_project(project, None)
+        window._select_link_item("moving_link")
+        window.use_picked_plane_for_axis(
+            {
+                "part_id": "moving_part",
+                "center_zero": np.asarray((0.25, -0.1, 0.4)),
+                "normal_zero": np.asarray((0.0, 1.0, 0.0)),
+                "center_world": np.asarray((0.25, -0.1, 0.4)),
+                "normal_world": np.asarray((0.0, 1.0, 0.0)),
+                "triangle_count": 8,
+            }
+        )
+
+        np.testing.assert_allclose(
+            window.joint_editor.origin_editor.value(),
+            (250.0, -100.0, 400.0),
+        )
+        # With a +90 degree joint-frame yaw, world +Y is joint-frame +X.
+        np.testing.assert_allclose(
+            window.joint_editor.axis_editor.value(),
+            (1.0, 0.0, 0.0),
+            atol=1.0e-4,
+        )
+        marker = window.viewport._axis_actor.GetUserMatrix()
+        np.testing.assert_allclose(
+            [marker.GetElement(index, 3) for index in range(3)],
+            (0.25, -0.1, 0.4),
+        )
+        assert "8개 삼각형" in window.statusBar().currentMessage()
+    finally:
+        window.viewport._vtk_widget.Finalize()
+        window.close()
+        window.deleteLater()
+        app.processEvents()
+
+
 def test_new_manual_tree_and_nested_children_follow_selected_parent() -> None:
     _app()
     parts = [

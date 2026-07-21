@@ -37,7 +37,14 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ..model import JointSpec, ProjectValidationError, RobotProject, apply_transform, sanitize_name
+from ..model import (
+    JointSpec,
+    ProjectValidationError,
+    RobotProject,
+    apply_transform,
+    rpy_matrix,
+    sanitize_name,
+)
 from ..project_io import apply_project_config, load_project_config, save_project
 from ..step_subprocess import load_step_project_isolated
 from ..urdf_io import export_urdf, load_urdf
@@ -321,6 +328,7 @@ class MainWindow(QMainWindow):
         self.viewport = ViewportWidget()
         self.viewport.partsSelectionChanged.connect(self._viewport_selection_changed)
         self.viewport.animationToggled.connect(self._set_demo_playing)
+        self.viewport.surfacePicked.connect(self.use_picked_plane_for_axis)
         splitter.addWidget(self.viewport)
 
         right_contents = QWidget()
@@ -338,6 +346,8 @@ class MainWindow(QMainWindow):
         self.joint_editor.applyRequested.connect(self.apply_joint_values)
         self.joint_editor.positionChanged.connect(self.set_current_joint_position)
         self.joint_editor.originFromSelectionRequested.connect(self.use_selection_center_for_origin)
+        self.joint_editor.axisFromPlaneRequested.connect(self.begin_axis_from_plane)
+        self.joint_editor.axisPreviewRequested.connect(self.preview_joint_axis)
         right_layout.addWidget(self.joint_editor)
         right_layout.addStretch(1)
 
@@ -1655,6 +1665,115 @@ class MainWindow(QMainWindow):
             self._parts_center(identifiers).reshape(1, 3), np.linalg.inv(parent_zero)
         )[0]
         self.joint_editor.set_origin_mm(center_parent * 1000.0)
+
+    def begin_axis_from_plane(self) -> None:
+        """Arm a one-shot viewport pick for a planar joint center and axis."""
+
+        if self.project is None or self.current_joint is None:
+            QMessageBox.information(self, "관절 선택 필요", "회전축을 설정할 관절을 선택하세요.")
+            return
+        kind = self.joint_editor.type_combo.currentText()
+        if kind not in {"prismatic", "revolute", "continuous"}:
+            QMessageBox.information(
+                self,
+                "가동 관절 필요",
+                "동작 종류를 prismatic, revolute 또는 continuous로 설정하세요.",
+            )
+            return
+        self.viewport.begin_surface_pick()
+        self.statusBar().showMessage(
+            "3D 화면에서 축 기준으로 사용할 평면을 클릭하세요. Esc를 누르면 취소됩니다."
+        )
+
+    def use_picked_plane_for_axis(self, picked: dict[str, Any]) -> None:
+        """Load a picked planar region's center and normal into the editor."""
+
+        if self.project is None or self.current_joint is None:
+            return
+        try:
+            joint = self.project.joint(self.current_joint)
+            center_zero = np.asarray(picked["center_zero"], dtype=float)
+            normal_zero = np.asarray(picked["normal_zero"], dtype=float)
+            center_world = np.asarray(picked["center_world"], dtype=float)
+            normal_world = np.asarray(picked["normal_world"], dtype=float)
+            if any(value.shape != (3,) for value in (
+                center_zero,
+                normal_zero,
+                center_world,
+                normal_world,
+            )):
+                raise ValueError("선택 평면 좌표가 올바르지 않습니다.")
+            parent_zero = self.project.forward_kinematics(zero=True)[joint.parent]
+            center_parent = apply_transform(
+                center_zero.reshape(1, 3),
+                np.linalg.inv(parent_zero),
+            )[0]
+            joint_rotation_zero = parent_zero[:3, :3] @ rpy_matrix(joint.origin_rpy)
+            axis_joint = np.linalg.solve(joint_rotation_zero, normal_zero)
+            axis_joint /= np.linalg.norm(axis_joint)
+            normal_world /= np.linalg.norm(normal_world)
+        except (KeyError, ValueError, np.linalg.LinAlgError) as exc:
+            QMessageBox.warning(self, "평면 축 설정 실패", str(exc))
+            return
+
+        self.joint_editor.set_origin_mm(center_parent * 1000.0)
+        self.joint_editor.set_axis(axis_joint)
+        rotational = self.joint_editor.type_combo.currentText() in {
+            "revolute",
+            "continuous",
+        }
+        self.viewport.set_axis_marker(
+            center_world,
+            normal_world,
+            self._scene_scale * (0.28 if rotational else 0.18),
+            bidirectional=rotational,
+        )
+        count = int(picked.get("triangle_count", 1))
+        self.statusBar().showMessage(
+            f"평면 중심·노멀을 가져왔습니다 ({count}개 삼각형). "
+            "필요하면 방향 반전을 누른 뒤 동작 설정 적용을 누르세요.",
+            12000,
+        )
+
+    def preview_joint_axis(self, axis: Iterable[float]) -> None:
+        """Preview an editor axis shortcut or direction flip before applying."""
+
+        if self.project is None or self.current_joint is None:
+            return
+        try:
+            joint = self.project.joint(self.current_joint)
+            axis_joint = np.asarray(axis, dtype=float)
+            axis_joint /= np.linalg.norm(axis_joint)
+            current_fk = self.project.forward_kinematics()
+            parent_frame = current_fk[joint.parent]
+            origin_parent = self.joint_editor.origin_editor.value() / 1000.0
+            origin_world = apply_transform(
+                origin_parent.reshape(1, 3),
+                parent_frame,
+            )[0]
+            direction_world = (
+                parent_frame[:3, :3]
+                @ rpy_matrix(joint.origin_rpy)
+                @ axis_joint
+            )
+            rotational = self.joint_editor.type_combo.currentText() in {
+                "revolute",
+                "continuous",
+            }
+            if not rotational:
+                marker_origin = self._current_link_bbox_center(current_fk)
+                if marker_origin is None:
+                    marker_origin = origin_world
+            else:
+                marker_origin = origin_world
+            self.viewport.set_axis_marker(
+                marker_origin,
+                direction_world,
+                self._scene_scale * (0.28 if rotational else 0.18),
+                bidirectional=rotational,
+            )
+        except (KeyError, ValueError, np.linalg.LinAlgError):
+            return
 
     # ---------- state ----------
     def _mark_dirty(self) -> None:

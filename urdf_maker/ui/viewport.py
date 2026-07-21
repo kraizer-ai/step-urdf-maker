@@ -76,6 +76,99 @@ __all__ = [
 ]
 
 
+def _coplanar_region_geometry(
+    vertices: Any,
+    triangles: Any,
+    seed_cell: int,
+    *,
+    angle_tolerance_degrees: float = 3.0,
+) -> tuple[np.ndarray, np.ndarray, int]:
+    """Return the area center and normal of a connected coplanar triangle region.
+
+    STEP faces arrive in the viewport as tessellated triangles.  A useful face
+    pick therefore needs to collect the connected triangles which lie on the
+    same geometric plane instead of returning one arbitrary triangle center.
+    """
+
+    points = np.asarray(vertices, dtype=np.float64)
+    cells = np.asarray(triangles, dtype=np.int64)
+    if points.ndim != 2 or points.shape[1:] != (3,):
+        raise ValueError("Surface vertices must have shape (N, 3)")
+    if cells.ndim != 2 or cells.shape[1:] != (3,):
+        raise ValueError("Surface triangles must have shape (M, 3)")
+    if not 0 <= int(seed_cell) < len(cells):
+        raise ValueError("The picked surface cell is outside the mesh")
+
+    triangle_points = points[cells]
+    crosses = np.cross(
+        triangle_points[:, 1] - triangle_points[:, 0],
+        triangle_points[:, 2] - triangle_points[:, 0],
+    )
+    double_areas = np.linalg.norm(crosses, axis=1)
+    valid = double_areas > 1.0e-15
+    if not valid[int(seed_cell)]:
+        raise ValueError("The picked surface triangle has zero area")
+
+    normals = np.zeros_like(crosses)
+    normals[valid] = crosses[valid] / double_areas[valid, None]
+    seed_normal = normals[int(seed_cell)]
+    seed_point = triangle_points[int(seed_cell), 0]
+    cosine_limit = math.cos(math.radians(float(angle_tolerance_degrees)))
+
+    # Scale the distance tolerance with the mesh, while keeping it tight
+    # enough that nearby parallel plates are not accidentally combined.
+    diagonal = float(np.linalg.norm(np.ptp(points, axis=0)))
+    distance_tolerance = max(diagonal * 1.0e-6, 1.0e-10)
+    alignment = normals @ seed_normal
+    plane_distance = np.max(
+        np.abs((triangle_points - seed_point) @ seed_normal),
+        axis=1,
+    )
+    candidate_indices = np.flatnonzero(
+        valid
+        & (np.abs(alignment) >= cosine_limit)
+        & (plane_distance <= distance_tolerance)
+    )
+    candidates = {int(index) for index in candidate_indices}
+
+    # Only triangles sharing an edge belong to the same face region.  Merely
+    # touching at a corner must not merge otherwise unrelated planar faces.
+    edge_to_cells: dict[tuple[int, int], list[int]] = {}
+    for cell_index in candidates:
+        a, b, c = (int(value) for value in cells[cell_index])
+        for first, second in ((a, b), (b, c), (c, a)):
+            edge = (first, second) if first < second else (second, first)
+            edge_to_cells.setdefault(edge, []).append(cell_index)
+
+    connected: set[int] = set()
+    pending = [int(seed_cell)]
+    while pending:
+        cell_index = pending.pop()
+        if cell_index in connected or cell_index not in candidates:
+            continue
+        connected.add(cell_index)
+        a, b, c = (int(value) for value in cells[cell_index])
+        for first, second in ((a, b), (b, c), (c, a)):
+            edge = (first, second) if first < second else (second, first)
+            pending.extend(edge_to_cells.get(edge, ()))
+
+    selected = np.asarray(sorted(connected), dtype=np.int64)
+    if not len(selected):
+        raise ValueError("No connected planar surface was found")
+    weights = double_areas[selected]
+    centers = np.mean(triangle_points[selected], axis=1)
+    center = np.average(centers, axis=0, weights=weights)
+
+    oriented_crosses = crosses[selected].copy()
+    reverse = (oriented_crosses @ seed_normal) < 0.0
+    oriented_crosses[reverse] *= -1.0
+    normal = np.sum(oriented_crosses, axis=0)
+    normal_magnitude = float(np.linalg.norm(normal))
+    if normal_magnitude < 1.0e-15:
+        raise ValueError("The selected planar surface has no stable normal")
+    return center, normal / normal_magnitude, int(len(selected))
+
+
 def _missing_dependency_message() -> str:
     detail = f" ({_IMPORT_ERROR})" if _IMPORT_ERROR is not None else ""
     return (
@@ -92,6 +185,7 @@ if _IMPORT_ERROR is not None:
         """Dependency-error placeholder which keeps this module importable."""
 
         partsSelectionChanged = None
+        surfacePicked = None
 
         @staticmethod
         def dependency_error() -> str:
@@ -118,6 +212,8 @@ else:
         normals: vtkPolyDataNormals
         mapper: vtkPolyDataMapper
         color: tuple[float, float, float, float]
+        vertices: np.ndarray
+        triangles: np.ndarray
 
 
     @dataclass(slots=True)
@@ -252,6 +348,7 @@ else:
 
         partsSelectionChanged = Signal(list)
         animationToggled = Signal(bool)
+        surfacePicked = Signal(object)
 
         def __init__(self, parent: QWidget | None = None) -> None:
             super().__init__(parent)
@@ -314,8 +411,11 @@ else:
             self._fps_label.adjustSize()
             self._position_fps_label()
             self._fps_label.raise_()
+            self._default_shortcut_text = (
+                "Ctrl+H: 배정 파츠 숨김/보임 · F: 전체 보기 · Esc: 선택 해제"
+            )
             self._shortcut_label = QLabel(
-                "Ctrl+H: 배정 파츠 숨김/보임 · F: 전체 보기 · Esc: 선택 해제",
+                self._default_shortcut_text,
                 self._vtk_widget,
             )
             self._shortcut_label.setObjectName("viewportShortcuts")
@@ -378,6 +478,7 @@ else:
             self._mouse_press_position: QPointF | None = None
             self._mouse_press_ctrl = False
             self._mouse_press_remove = False
+            self._surface_pick_mode = False
             self._has_framed = False
 
             self._axis_actor: vtkActor | None = None
@@ -737,9 +838,38 @@ else:
                 self._renderer.ResetCameraClippingRange()
                 self._render()
 
+        def begin_surface_pick(self) -> None:
+            """Use the next clicked mesh face as a planar center/normal pick."""
+
+            self._surface_pick_mode = True
+            self._mouse_press_position = None
+            self._vtk_widget.setCursor(Qt.CursorShape.CrossCursor)
+            self._shortcut_label.setText(
+                "회전축으로 사용할 평면을 클릭하세요 · Esc: 취소"
+            )
+            self._shortcut_label.adjustSize()
+            self._position_shortcut_label()
+            self._shortcut_label.raise_()
+
+        def cancel_surface_pick(self) -> None:
+            """Leave the one-shot planar surface selection mode."""
+
+            if not self._surface_pick_mode:
+                return
+            self._surface_pick_mode = False
+            self._mouse_press_position = None
+            self._vtk_widget.unsetCursor()
+            self._shortcut_label.setText(self._default_shortcut_text)
+            self._shortcut_label.adjustSize()
+            self._position_shortcut_label()
+
+        def surface_pick_active(self) -> bool:
+            return self._surface_pick_mode
+
         def clear(self) -> None:
             """Remove all model actors, selection, and the joint-axis marker."""
 
+            self.cancel_surface_pick()
             had_selection = bool(self._selected)
             self._remove_parts()
             if self._axis_actor is not None:
@@ -766,6 +896,13 @@ else:
                     self._queue_resize_render()
                 elif event_type == QEvent.Type.Show:
                     self._queue_resize_render()
+                elif (
+                    event_type == QEvent.Type.KeyPress
+                    and self._surface_pick_mode
+                    and event.key() == Qt.Key.Key_Escape  # type: ignore[attr-defined]
+                ):
+                    self.cancel_surface_pick()
+                    return True
                 elif (
                     event_type == QEvent.Type.MouseButtonPress
                     and event.button() == Qt.MouseButton.LeftButton  # type: ignore[attr-defined]
@@ -865,6 +1002,8 @@ else:
                 normals=normals,
                 mapper=mapper,
                 color=color,
+                vertices=vertices,
+                triangles=triangles,
             )
 
         def _make_orientation_axes(self) -> vtkAxesActor:
@@ -973,6 +1112,31 @@ else:
             actor = self._picker.GetActor() if picked else None
             part_id = self._actor_to_part.get(_actor_key(actor) or "")
 
+            if self._surface_pick_mode:
+                if part_id is None:
+                    self._shortcut_label.setText(
+                        "평면을 찾지 못했습니다. 모델의 면을 다시 클릭하세요 · Esc: 취소"
+                    )
+                    self._shortcut_label.adjustSize()
+                    self._position_shortcut_label()
+                    return
+                try:
+                    result = self._surface_pick_result(
+                        part_id,
+                        int(self._picker.GetCellId()),
+                    )
+                except (ValueError, np.linalg.LinAlgError):
+                    self._shortcut_label.setText(
+                        "이 면의 중심·노멀을 계산할 수 없습니다. 다른 면을 클릭하세요 · Esc: 취소"
+                    )
+                    self._shortcut_label.adjustSize()
+                    self._position_shortcut_label()
+                    return
+                self.cancel_surface_pick()
+                self._set_selection([part_id])
+                self.surfacePicked.emit(result)
+                return
+
             if part_id is None:
                 if not add and not remove:
                     self._set_selection([])
@@ -989,6 +1153,39 @@ else:
                 self._set_selection(selected)
             else:
                 self._set_selection([part_id])
+
+        def _surface_pick_result(self, part_id: str, cell_id: int) -> dict[str, Any]:
+            """Build zero-pose and displayed coordinates for a picked plane."""
+
+            record = self._parts[part_id]
+            center_zero, normal_zero, triangle_count = _coplanar_region_geometry(
+                record.vertices,
+                record.triangles,
+                cell_id,
+            )
+            actor_matrix = record.actor.GetMatrix()
+            transform = np.asarray(
+                [
+                    [
+                        actor_matrix.GetElement(row, column)
+                        for column in range(4)
+                    ]
+                    for row in range(4)
+                ],
+                dtype=np.float64,
+            )
+            linear = transform[:3, :3]
+            center_world = linear @ center_zero + transform[:3, 3]
+            normal_world = np.linalg.inv(linear).T @ normal_zero
+            normal_world /= np.linalg.norm(normal_world)
+            return {
+                "part_id": part_id,
+                "center_zero": center_zero,
+                "normal_zero": normal_zero,
+                "center_world": center_world,
+                "normal_world": normal_world,
+                "triangle_count": triangle_count,
+            }
 
         def _visible_bounds(self) -> tuple[float, float, float, float, float, float] | None:
             lower = np.asarray((np.inf, np.inf, np.inf), dtype=np.float64)

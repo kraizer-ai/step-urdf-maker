@@ -5,7 +5,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication
 
 from urdf_maker.model import ScenePart
-from urdf_maker.ui.viewport import ViewportWidget
+from urdf_maker.ui.viewport import ViewportWidget, _coplanar_region_geometry
 
 
 def _app() -> QApplication:
@@ -20,6 +20,36 @@ def _part(identifier: str) -> ScenePart:
         np.asarray(((0, 1, 2),), dtype=np.int64),
         color=(0.2, 0.3, 0.4, 1.0),
     )
+
+
+def test_coplanar_pick_uses_connected_face_center_and_normal() -> None:
+    vertices = np.asarray(
+        (
+            (0.0, 0.0, 0.0),
+            (1.0, 0.0, 0.0),
+            (1.0, 1.0, 0.0),
+            (0.0, 1.0, 0.0),
+            (1.0, 0.0, 1.0),
+            (3.0, 0.0, 0.0),
+            (4.0, 0.0, 0.0),
+            (3.0, 1.0, 0.0),
+        )
+    )
+    triangles = np.asarray(
+        (
+            (0, 1, 2),
+            (0, 2, 3),
+            (1, 4, 2),  # connected, but perpendicular to the picked plane
+            (5, 6, 7),  # coplanar, but disconnected from the picked face
+        ),
+        dtype=np.int64,
+    )
+
+    center, normal, count = _coplanar_region_geometry(vertices, triangles, 0)
+
+    np.testing.assert_allclose(center, (0.5, 0.5, 0.0))
+    np.testing.assert_allclose(normal, (0.0, 0.0, 1.0))
+    assert count == 2
 
 
 def test_transient_part_colors_preserve_selection_outline() -> None:
@@ -55,6 +85,37 @@ def test_transient_part_colors_preserve_selection_outline() -> None:
         np.testing.assert_allclose(prop.GetColor(), (0.1, 0.8, 0.2), atol=1e-9)
         assert not prop.GetEdgeVisibility()
         assert viewport._selection_outlines == {}
+    finally:
+        viewport._vtk_widget.Finalize()
+        viewport.close()
+        viewport.deleteLater()
+        app.processEvents()
+
+
+def test_surface_pick_result_includes_display_transform_and_pick_mode() -> None:
+    app = _app()
+    viewport = ViewportWidget()
+    try:
+        viewport.set_parts([_part("one")])
+        transform = np.eye(4)
+        transform[:3, :3] = np.asarray(
+            ((1.0, 0.0, 0.0), (0.0, 0.0, -1.0), (0.0, 1.0, 0.0))
+        )
+        transform[:3, 3] = (2.0, 3.0, 4.0)
+        viewport.update_part_transforms({"one": transform})
+
+        picked = viewport._surface_pick_result("one", 0)
+        np.testing.assert_allclose(picked["center_zero"], (1 / 3, 1 / 3, 0.0))
+        np.testing.assert_allclose(picked["normal_zero"], (0.0, 0.0, 1.0))
+        np.testing.assert_allclose(picked["center_world"], (2 + 1 / 3, 3.0, 4 + 1 / 3))
+        np.testing.assert_allclose(picked["normal_world"], (0.0, -1.0, 0.0))
+
+        viewport.begin_surface_pick()
+        assert viewport.surface_pick_active()
+        assert "평면을 클릭" in viewport._shortcut_label.text()
+        viewport.cancel_surface_pick()
+        assert not viewport.surface_pick_active()
+        assert "Ctrl+H" in viewport._shortcut_label.text()
     finally:
         viewport._vtk_widget.Finalize()
         viewport.close()

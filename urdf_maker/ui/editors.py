@@ -250,6 +250,8 @@ class JointEditorWidget(QGroupBox):
     applyRequested = Signal(object)
     positionChanged = Signal(float)
     originFromSelectionRequested = Signal()
+    axisFromPlaneRequested = Signal()
+    axisPreviewRequested = Signal(object)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__("선택 링크의 동작 설정", parent)
@@ -328,12 +330,25 @@ class JointEditorWidget(QGroupBox):
                 QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
             )
             button.clicked.connect(
-                lambda _checked=False, v=vector: self.axis_editor.setValue(v)
+                lambda _checked=False, v=vector: self._set_axis_and_preview(v)
             )
             shortcut_layout.addWidget(button, index % 2, index // 2)
         for column in range(3):
             shortcut_layout.setColumnStretch(column, 1)
         axis_layout.addLayout(shortcut_layout)
+        plane_layout = QHBoxLayout()
+        plane_layout.setContentsMargins(0, 0, 0, 0)
+        self.axis_from_plane = QPushButton("3D 평면에서 중심축 선택")
+        self.axis_from_plane.setToolTip(
+            "다음에 클릭한 평면의 중심을 관절 원점으로, 평면 노멀을 회전축으로 사용합니다."
+        )
+        self.axis_from_plane.clicked.connect(self.axisFromPlaneRequested)
+        plane_layout.addWidget(self.axis_from_plane, 1)
+        self.flip_axis_button = QPushButton("방향 반전")
+        self.flip_axis_button.setToolTip("현재 축의 부호를 반대로 바꿉니다.")
+        self.flip_axis_button.clicked.connect(self._flip_axis)
+        plane_layout.addWidget(self.flip_axis_button)
+        axis_layout.addLayout(plane_layout)
         form.addRow("이동/회전 방향", axis_row)
 
         limits = QWidget()
@@ -518,6 +533,16 @@ class JointEditorWidget(QGroupBox):
     def set_origin_mm(self, value: Iterable[float]) -> None:
         self.origin_editor.setValue(value)
 
+    def set_axis(self, value: Iterable[float]) -> None:
+        self.axis_editor.setValue(value)
+
+    def _flip_axis(self) -> None:
+        self._set_axis_and_preview(-self.axis_editor.value())
+
+    def _set_axis_and_preview(self, value: Iterable[float]) -> None:
+        self.axis_editor.setValue(value)
+        self.axisPreviewRequested.emit(self.axis_editor.value())
+
     def _joint_display_scale(self, joint_type: str | None = None) -> float:
         kind = joint_type or self.type_combo.currentText()
         return 1000.0 if kind == "prismatic" else 180.0 / math.pi
@@ -531,6 +556,9 @@ class JointEditorWidget(QGroupBox):
         self.position_units.setText(units)
         self.step_units.setText(units)
         self.preview_box.setEnabled(kind in {"prismatic", "revolute", "continuous"})
+        scalar = kind in {"prismatic", "revolute", "continuous"}
+        self.axis_from_plane.setEnabled(scalar)
+        self.flip_axis_button.setEnabled(scalar)
         self._refresh_position_range()
 
     def _refresh_position_range(self) -> None:

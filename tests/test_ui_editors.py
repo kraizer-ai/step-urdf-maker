@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 
+import numpy as np
 from PySide6.QtWidgets import QApplication
 
 from urdf_maker.model import JointSpec
@@ -54,6 +55,26 @@ def test_continuous_joint_can_be_displayed() -> None:
     assert values["type"] == "continuous"
     assert math.isclose(values["lower"], -math.pi)
     assert math.isclose(values["upper"], math.pi)
+
+
+def test_joint_editor_requests_plane_axis_and_can_flip_its_direction() -> None:
+    _app()
+    editor = JointEditorWidget()
+    editor.set_link_names(["base", "wheel"])
+    editor.set_joint(
+        JointSpec("wheel_joint", "revolute", "base", "wheel", axis=(0, 0, 1))
+    )
+    plane_requests: list[bool] = []
+    previews: list[object] = []
+    editor.axisFromPlaneRequested.connect(lambda: plane_requests.append(True))
+    editor.axisPreviewRequested.connect(previews.append)
+
+    editor.axis_from_plane.click()
+    editor.flip_axis_button.click()
+
+    assert plane_requests == [True]
+    np.testing.assert_allclose(editor.axis_editor.value(), (0.0, 0.0, -1.0))
+    np.testing.assert_allclose(previews[-1], (0.0, 0.0, -1.0))
 
 
 def test_floating_joint_disables_scalar_preview() -> None:
