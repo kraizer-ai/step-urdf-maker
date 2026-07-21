@@ -1,0 +1,14 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+.venv-incomplete/
+build/
+dist/
+*.egg-info/
+*.urdfmaker.autosave.json
+*.log
+data/*.zip
+data/*/
+artifacts/*
+!artifacts/urdf-demo-cover.jpg

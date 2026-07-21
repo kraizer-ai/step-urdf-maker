@@ -1,0 +1,2040 @@
+{
+  "format": "step-urdf-maker",
+  "version": 1,
+  "name": "wsr-0002898_simplified_extended_2025-11-23",
+  "source": {
+    "path": "wsr-0002898 (simplified extended) 2025-11-23.STEP",
+    "kind": "step"
+  },
+  "root_link": "base_link",
+  "links": [
+    {
+      "name": "base_link",
+      "part_ids": [
+        "part_c5c8aa64c117",
+        "part_114e84e4798e",
+        "part_a55218b9db57",
+        "part_fdf381bbbec5",
+        "part_3b4ae09929d3",
+        "part_e7a2b1cb7bda",
+        "part_2c1a90fb4e07"
+      ]
+    },
+    {
+      "name": "moving_link_L",
+      "part_ids": [
+        "part_04dd4c85eb80",
+        "part_f7a892003f5d",
+        "part_381a29415f8f",
+        "part_a3c656cd845d",
+        "part_9f9dda6d27de",
+        "part_464958278148",
+        "part_9cb18ae1a138",
+        "part_a41404b00971",
+        "part_171d9f4c10f0",
+        "part_8721f7188b63"
+      ]
+    },
+    {
+      "name": "moving_link_L_F",
+      "part_ids": [
+        "part_35b15f6c2933",
+        "part_05dfc2999671",
+        "part_4dd653b98914",
+        "part_686bf7bddb4f",
+        "part_35d798c2b5c0",
+        "part_b2a0ffb20b5d",
+        "part_4d8cc933395d",
+        "part_ff9339a15ca7",
+        "part_05eb37a6dd81",
+        "part_b3ad170c39b6"
+      ]
+    },
+    {
+      "name": "moving_link_L_T",
+      "part_ids": [
+        "part_45c52e56f7fe",
+        "part_cb2080890586",
+        "part_94542816cf30",
+        "part_c575f0678454",
+        "part_cacf05e0e7e3",
+        "part_7689d651f07f"
+      ]
+    }
+  ],
+  "joints": [
+    {
+      "name": "moving_link_L_joint",
+      "type": "prismatic",
+      "parent": "base_link",
+      "child": "moving_link_L",
+      "origin_xyz": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "origin_rpy": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "axis": [
+        -1.0,
+        0.0,
+        0.0
+      ],
+      "lower": 0.0,
+      "upper": 0.3,
+      "effort": 100.0,
+      "velocity": 0.25,
+      "position": 0.23610000000000003
+    },
+    {
+      "name": "moving_link_L_F_joint",
+      "type": "prismatic",
+      "parent": "moving_link_L",
+      "child": "moving_link_L_F",
+      "origin_xyz": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "origin_rpy": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "axis": [
+        0.0,
+        0.0,
+        -1.0
+      ],
+      "lower": 0.0,
+      "upper": 0.3,
+      "effort": 100.0,
+      "velocity": 0.25,
+      "position": 0.025200000000000004
+    },
+    {
+      "name": "moving_link_L_T_joint",
+      "type": "prismatic",
+      "parent": "moving_link_L_F",
+      "child": "moving_link_L_T",
+      "origin_xyz": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "origin_rpy": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "axis": [
+        0.0,
+        -1.0,
+        0.0
+      ],
+      "lower": 0.0,
+      "upper": 0.3,
+      "effort": 100.0,
+      "velocity": 0.25,
+      "position": 0.19590000000000002
+    }
+  ],
+  "parts": {
+    "part_c5c8aa64c117": {
+      "link": "base_link",
+      "visible": true,
+      "signature": {
+        "name": "bvme-0002591",
+        "bounds_m": [
+          [
+            -0.474,
+            -0.135,
+            -0.1385
+          ],
+          [
+            0.474,
+            0.0,
+            0.1385
+          ]
+        ],
+        "vertex_count": 19097,
+        "triangle_count": 19453
+      }
+    },
+    "part_114e84e4798e": {
+      "link": "base_link",
+      "visible": true,
+      "signature": {
+        "name": "bvme-0002662 (kuka)",
+        "bounds_m": [
+          [
+            -0.11,
+            0.0,
+            -0.0765
+          ],
+          [
+            0.11,
+            0.03,
+            0.1435
+          ]
+        ],
+        "vertex_count": 5646,
+        "triangle_count": 5712
+      }
+    },
+    "part_a55218b9db57": {
+      "link": "base_link",
+      "visible": true,
+      "signature": {
+        "name": "bvme-0001989 (kuka)",
+        "bounds_m": [
+          [
+            0.474,
+            -0.06,
+            -0.004
+          ],
+          [
+            0.521,
+            0.02,
+            0.101
+          ]
+        ],
+        "vertex_count": 1312,
+        "triangle_count": 1228
+      }
+    },
+    "part_fdf381bbbec5": {
+      "link": "base_link",
+      "visible": true,
+      "signature": {
+        "name": "bvme-0002609",
+        "bounds_m": [
+          [
+            -0.474,
+            -0.136,
+            0.0685
+          ],
+          [
+            0.474,
+            -0.129,
+            0.1385
+          ]
+        ],
+        "vertex_count": 1258,
+        "triangle_count": 1208
+      }
+    },
+    "part_3b4ae09929d3": {
+      "link": "base_link",
+      "visible": true,
+      "signature": {
+        "name": "bvme-0001231",
+        "bounds_m": [
+          [
+            -0.459,
+            0.0,
+            -0.0965
+          ],
+          [
+            -0.322,
+            0.082,
+            0.1335
+          ]
+        ],
+        "vertex_count": 4298,
+        "triangle_count": 4116
+      }
+    },
+    "part_e7a2b1cb7bda": {
+      "link": "base_link",
+      "visible": true,
+      "signature": {
+        "name": "bvme-0001232",
+        "bounds_m": [
+          [
+            -0.451,
+            0.082,
+            -0.0965
+          ],
+          [
+            -0.34,
+            0.0835,
+            0.1335
+          ]
+        ],
+        "vertex_count": 1132,
+        "triangle_count": 1180
+      }
+    },
+    "part_2c1a90fb4e07": {
+      "link": "base_link",
+      "visible": true,
+      "signature": {
+        "name": "bvme-0002622",
+        "bounds_m": [
+          [
+            -0.25,
+            -0.0,
+            -0.1095
+          ],
+          [
+            0.25,
+            0.071,
+            -0.0675
+          ]
+        ],
+        "vertex_count": 4880,
+        "triangle_count": 4736
+      }
+    },
+    "part_9cb18ae1a138": {
+      "link": "moving_link_L",
+      "visible": true,
+      "signature": {
+        "name": "bvme-0001255",
+        "bounds_m": [
+          [
+            0.264,
+            -0.787,
+            -0.0565
+          ],
+          [
+            0.28,
+            -0.034,
+            0.1185
+          ]
+        ],
+        "vertex_count": 6893,
+        "triangle_count": 7869
+      }
+    },
+    "part_a41404b00971": {
+      "link": "moving_link_L",
+      "visible": true,
+      "signature": {
+        "name": "bvme-0002605",
+        "bounds_m": [
+          [
+            0.28,
+            -0.789,
+            -0.0185
+          ],
+          [
+            0.404,
+            -0.757,
+            0.0035
+          ]
+        ],
+        "vertex_count": 1919,
+        "triangle_count": 2223
+      }
+    },
+    "part_171d9f4c10f0": {
+      "link": "moving_link_L",
+      "visible": true,
+      "signature": {
+        "name": "bvme-0001254",
+        "bounds_m": [
+          [
+            0.264,
+            -0.789,
+            -0.0435
+          ],
+          [
+            0.362,
+            -0.787,
+            0.0035
+          ]
+        ],
+        "vertex_count": 1372,
+        "triangle_count": 1396
+      }
+    },
+    "part_8721f7188b63": {
+      "link": "moving_link_L",
+      "visible": true,
+      "signature": {
+        "name": "bvme-0001267",
+        "bounds_m": [
+          [
+            0.279,
+            -0.7868,
+            -0.0503
+          ],
+          [
+            0.28,
+            -0.0342,
+            -0.0227
+          ]
+        ],
+        "vertex_count": 1152,
+        "triangle_count": 1132
+      }
+    },
+    "part_35b15f6c2933": {
+      "link": "moving_link_L_F",
+      "visible": true,
+      "signature": {
+        "name": "bvme-0001209",
+        "bounds_m": [
+          [
+            0.27,
+            -0.808,
+            -0.1665
+          ],
+          [
+            0.282,
+            -0.124,
+            -0.0565
+          ]
+        ],
+        "vertex_count": 6564,
+        "triangle_count": 6730
+      }
+    },
+    "part_05dfc2999671": {
+      "link": "moving_link_L_F",
+      "visible": true,
+      "signature": {
+        "name": "bvme-0001210",
+        "bounds_m": [
+          [
+            0.35,
+            -0.808,
+            -0.1665
+          ],
+          [
+            0.362,
+            -0.124,
+            -0.0565
+          ]
+        ],
+        "vertex_count": 5030,
+        "triangle_count": 4954
+      }
+    },
+    "part_4dd653b98914": {
+      "link": "moving_link_L_F",
+      "visible": true,
+      "signature": {
+        "name": "bvme-0002596",
+        "bounds_m": [
+          [
+            0.27,
+            -0.808,
+            -0.1365
+          ],
+          [
+            0.404,
+            -0.794,
+            0.3735
+          ]
+        ],
+        "vertex_count": 6164,
+        "triangle_count": 7461
+      }
+    },
+    "part_686bf7bddb4f": {
+      "link": "moving_link_L_F",
+      "visible": true,
+      "signature": {
+        "name": "bvme-0001214",
+        "bounds_m": [
+          [
+            0.362,
+            -0.218,
+            -0.1005
+          ],
+          [
+            0.38,
+            -0.124,
+            -0.0105
+          ]
+        ],
+        "vertex_count": 2635,
+        "triangle_count": 2713
+      }
+    },
+    "part_35d798c2b5c0": {
+      "link": "moving_link_L_F",
+      "visible": true,
+      "signature": {
+        "name": "bvme-0001244",
+        "bounds_m": [
+          [
+            0.36,
+            -0.2115,
+            -0.026
+          ],
+          [
+            0.435,
+            -0.1515,
+            -0.001
+          ]
+        ],
+        "vertex_count": 900,
+        "triangle_count": 848
+      }
+    },
+    "part_b2a0ffb20b5d": {
+      "link": "moving_link_L_F",
+      "visible": true,
+      "signature": {
+        "name": "101388",
+        "bounds_m": [
+          [
+            0.38,
+            -0.223,
+            -0.0703
+          ],
+          [
+            0.4925,
+            -0.144076933,
+            -0.0107
+          ]
+        ],
+        "vertex_count": 27952,
+        "triangle_count": 29878
+      }
+    },
+    "part_4d8cc933395d": {
+      "link": "moving_link_L_F",
+      "visible": true,
+      "signature": {
+        "name": "_153164 QSSF-1_4-6-B---(part)",
+        "bounds_m": [
+          [
+            0.411433651,
+            -0.191231492,
+            -0.0153
+          ],
+          [
+            0.429566349,
+            -0.171768508,
+            0.0134
+          ]
+        ],
+        "vertex_count": 3264,
+        "triangle_count": 4050
+      }
+    },
+    "part_ff9339a15ca7": {
+      "link": "moving_link_L_F",
+      "visible": true,
+      "signature": {
+        "name": "_Flachmutter M14X1-4-17",
+        "bounds_m": [
+          [
+            0.411433651,
+            -0.191231493,
+            -0.001
+          ],
+          [
+            0.429566349,
+            -0.171768508,
+            0.003
+          ]
+        ],
+        "vertex_count": 502,
+        "triangle_count": 480
+      }
+    },
+    "part_05eb37a6dd81": {
+      "link": "moving_link_L_F",
+      "visible": true,
+      "signature": {
+        "name": "perma_FLEX_60_Rev_A",
+        "bounds_m": [
+          [
+            0.391816541,
+            -0.210414895,
+            -0.0912843
+          ],
+          [
+            0.449183459,
+            -0.152585105,
+            -0.0073
+          ]
+        ],
+        "vertex_count": 9158,
+        "triangle_count": 11594
+      }
+    },
+    "part_45c52e56f7fe": {
+      "link": "moving_link_L_T",
+      "visible": true,
+      "signature": {
+        "name": "bvme-0002612",
+        "bounds_m": [
+          [
+            0.286,
+            -0.294,
+            -0.0505
+          ],
+          [
+            0.346,
+            -0.1945,
+            0.4015
+          ]
+        ],
+        "vertex_count": 6852,
+        "triangle_count": 6740
+      }
+    },
+    "part_c575f0678454": {
+      "link": "moving_link_L_T",
+      "visible": true,
+      "signature": {
+        "name": "DIN 929-M4-C_DIN 929-M4-C",
+        "bounds_m": [
+          [
+            0.3115,
+            -0.29265,
+            0.346303848
+          ],
+          [
+            0.3205,
+            -0.28915,
+            0.356696152
+          ]
+        ],
+        "vertex_count": 864,
+        "triangle_count": 816
+      }
+    },
+    "part_cacf05e0e7e3": {
+      "link": "moving_link_L_T",
+      "visible": true,
+      "signature": {
+        "name": "DIN 929-M4-C_DIN 929-M4-C",
+        "bounds_m": [
+          [
+            0.3115,
+            -0.29265,
+            0.206303848
+          ],
+          [
+            0.3205,
+            -0.28915,
+            0.216696152
+          ]
+        ],
+        "vertex_count": 864,
+        "triangle_count": 816
+      }
+    },
+    "part_7689d651f07f": {
+      "link": "moving_link_L_T",
+      "visible": true,
+      "signature": {
+        "name": "DIN 929-M4-C_DIN 929-M4-C",
+        "bounds_m": [
+          [
+            0.3115,
+            -0.29265,
+            0.066303848
+          ],
+          [
+            0.3205,
+            -0.28915,
+            0.076696152
+          ]
+        ],
+        "vertex_count": 864,
+        "triangle_count": 816
+      }
+    },
+    "part_cb2080890586": {
+      "link": "moving_link_L_T",
+      "visible": true,
+      "signature": {
+        "name": "bvme-0002656",
+        "bounds_m": [
+          [
+            0.286,
+            -0.296,
+            0.0215
+          ],
+          [
+            0.346,
+            -0.294,
+            0.4015
+          ]
+        ],
+        "vertex_count": 614,
+        "triangle_count": 600
+      }
+    },
+    "part_94542816cf30": {
+      "link": "moving_link_L_T",
+      "visible": true,
+      "signature": {
+        "name": "bvme-0002655",
+        "bounds_m": [
+          [
+            0.286,
+            -0.306,
+            0.0215
+          ],
+          [
+            0.346,
+            -0.296,
+            0.4015
+          ]
+        ],
+        "vertex_count": 614,
+        "triangle_count": 600
+      }
+    },
+    "part_528ef44ae28f": {
+      "link": null,
+      "visible": true,
+      "signature": {
+        "name": "bvme-0001214",
+        "bounds_m": [
+          [
+            -0.38,
+            -0.218,
+            -0.1005
+          ],
+          [
+            -0.362,
+            -0.124,
+            -0.0105
+          ]
+        ],
+        "vertex_count": 2635,
+        "triangle_count": 2713
+      }
+    },
+    "part_7ffa2dc19368": {
+      "link": null,
+      "visible": true,
+      "signature": {
+        "name": "bvme-0001209",
+        "bounds_m": [
+          [
+            -0.362,
+            -0.808,
+            -0.1665
+          ],
+          [
+            -0.35,
+            -0.124,
+            -0.0565
+          ]
+        ],
+        "vertex_count": 6564,
+        "triangle_count": 6730
+      }
+    },
+    "part_b7476c2088a8": {
+      "link": null,
+      "visible": true,
+      "signature": {
+        "name": "bvme-0001210",
+        "bounds_m": [
+          [
+            -0.282,
+            -0.808,
+            -0.1665
+          ],
+          [
+            -0.27,
+            -0.124,
+            -0.0565
+          ]
+        ],
+        "vertex_count": 5030,
+        "triangle_count": 4954
+      }
+    },
+    "part_e92b58eb5035": {
+      "link": null,
+      "visible": true,
+      "signature": {
+        "name": "bvme-0002608",
+        "bounds_m": [
+          [
+            -0.404,
+            -0.808,
+            -0.1365
+          ],
+          [
+            -0.27,
+            -0.794,
+            0.3735
+          ]
+        ],
+        "vertex_count": 6030,
+        "triangle_count": 7267
+      }
+    },
+    "part_c0c0a08b3028": {
+      "link": null,
+      "visible": true,
+      "signature": {
+        "name": "bvme-0001244",
+        "bounds_m": [
+          [
+            -0.435,
+            -0.2115,
+            -0.026
+          ],
+          [
+            -0.36,
+            -0.1515,
+            -0.001
+          ]
+        ],
+        "vertex_count": 900,
+        "triangle_count": 848
+      }
+    },
+    "part_5bc4e1762e21": {
+      "link": null,
+      "visible": true,
+      "signature": {
+        "name": "101388",
+        "bounds_m": [
+          [
+            -0.4925,
+            -0.218923067,
+            -0.0703
+          ],
+          [
+            -0.38,
+            -0.14,
+            -0.0107
+          ]
+        ],
+        "vertex_count": 27952,
+        "triangle_count": 29878
+      }
+    },
+    "part_166aa5b7816a": {
+      "link": null,
+      "visible": true,
+      "signature": {
+        "name": "perma_FLEX_60_Rev_A",
+        "bounds_m": [
+          [
+            -0.449407624,
+            -0.210204839,
+            -0.0912843
+          ],
+          [
+            -0.391592376,
+            -0.152795161,
+            -0.0073
+          ]
+        ],
+        "vertex_count": 9158,
+        "triangle_count": 11594
+      }
+    },
+    "part_194f80848892": {
+      "link": null,
+      "visible": true,
+      "signature": {
+        "name": "_153164 QSSF-1_4-6-B---(part)",
+        "bounds_m": [
+          [
+            -0.429566349,
+            -0.191231493,
+            -0.0153
+          ],
+          [
+            -0.411433651,
+            -0.171768508,
+            0.0134
+          ]
+        ],
+        "vertex_count": 3264,
+        "triangle_count": 4050
+      }
+    },
+    "part_654b45b31bc2": {
+      "link": null,
+      "visible": true,
+      "signature": {
+        "name": "_Flachmutter M14X1-4-17",
+        "bounds_m": [
+          [
+            -0.429566349,
+            -0.191231492,
+            -0.001
+          ],
+          [
+            -0.411433651,
+            -0.171768508,
+            0.003
+          ]
+        ],
+        "vertex_count": 502,
+        "triangle_count": 480
+      }
+    },
+    "part_13d4ae17c970": {
+      "link": null,
+      "visible": true,
+      "signature": {
+        "name": "bvme-0002612",
+        "bounds_m": [
+          [
+            -0.346,
+            -0.294,
+            -0.0505
+          ],
+          [
+            -0.286,
+            -0.1945,
+            0.4015
+          ]
+        ],
+        "vertex_count": 6852,
+        "triangle_count": 6740
+      }
+    },
+    "part_b6501e8531cd": {
+      "link": null,
+      "visible": true,
+      "signature": {
+        "name": "DIN 929-M4-C_DIN 929-M4-C",
+        "bounds_m": [
+          [
+            -0.3205,
+            -0.29265,
+            0.346303848
+          ],
+          [
+            -0.3115,
+            -0.28915,
+            0.356696152
+          ]
+        ],
+        "vertex_count": 864,
+        "triangle_count": 816
+      }
+    },
+    "part_78c8b320e091": {
+      "link": null,
+      "visible": true,
+      "signature": {
+        "name": "DIN 929-M4-C_DIN 929-M4-C",
+        "bounds_m": [
+          [
+            -0.3205,
+            -0.29265,
+            0.206303848
+          ],
+          [
+            -0.3115,
+            -0.28915,
+            0.216696152
+          ]
+        ],
+        "vertex_count": 864,
+        "triangle_count": 816
+      }
+    },
+    "part_32274a665909": {
+      "link": null,
+      "visible": true,
+      "signature": {
+        "name": "DIN 929-M4-C_DIN 929-M4-C",
+        "bounds_m": [
+          [
+            -0.3205,
+            -0.29265,
+            0.066303848
+          ],
+          [
+            -0.3115,
+            -0.28915,
+            0.076696152
+          ]
+        ],
+        "vertex_count": 864,
+        "triangle_count": 816
+      }
+    },
+    "part_cba77c05e593": {
+      "link": null,
+      "visible": true,
+      "signature": {
+        "name": "bvme-0002656",
+        "bounds_m": [
+          [
+            -0.346,
+            -0.296,
+            0.0215
+          ],
+          [
+            -0.286,
+            -0.294,
+            0.4015
+          ]
+        ],
+        "vertex_count": 614,
+        "triangle_count": 600
+      }
+    },
+    "part_0989020c5bcc": {
+      "link": null,
+      "visible": true,
+      "signature": {
+        "name": "bvme-0002655",
+        "bounds_m": [
+          [
+            -0.346,
+            -0.306,
+            0.0215
+          ],
+          [
+            -0.286,
+            -0.296,
+            0.4015
+          ]
+        ],
+        "vertex_count": 614,
+        "triangle_count": 600
+      }
+    },
+    "part_04dd4c85eb80": {
+      "link": "moving_link_L",
+      "visible": true,
+      "signature": {
+        "name": "bvme-0001467 (rockwell)",
+        "bounds_m": [
+          [
+            0.288,
+            -0.057,
+            -0.38
+          ],
+          [
+            0.428,
+            0.0785,
+            -0.1405
+          ]
+        ],
+        "vertex_count": 7330,
+        "triangle_count": 7008
+      }
+    },
+    "part_f7a892003f5d": {
+      "link": "moving_link_L",
+      "visible": true,
+      "signature": {
+        "name": "bvme-0002604",
+        "bounds_m": [
+          [
+            0.265,
+            -0.144,
+            -0.5675
+          ],
+          [
+            0.474,
+            -0.0,
+            0.0445
+          ]
+        ],
+        "vertex_count": 2248,
+        "triangle_count": 2068
+      }
+    },
+    "part_b3ad170c39b6": {
+      "link": "moving_link_L_F",
+      "visible": true,
+      "signature": {
+        "name": "bvme-0001463 (rockwell)",
+        "bounds_m": [
+          [
+            0.2825,
+            -0.795,
+            -0.1765
+          ],
+          [
+            0.3495,
+            -0.1145,
+            -0.118
+          ]
+        ],
+        "vertex_count": 2034,
+        "triangle_count": 1860
+      }
+    },
+    "part_b38a4c94325e": {
+      "link": null,
+      "visible": true,
+      "signature": {
+        "name": "Mirrorbvme-0001463 (rockwell)",
+        "bounds_m": [
+          [
+            -0.3495,
+            -0.794,
+            -0.1765
+          ],
+          [
+            -0.2825,
+            -0.1135,
+            -0.118
+          ]
+        ],
+        "vertex_count": 2034,
+        "triangle_count": 1860
+      }
+    },
+    "part_381a29415f8f": {
+      "link": "moving_link_L",
+      "visible": true,
+      "signature": {
+        "name": "DIN 912 M4 x 12 --- 12N_DIN 912 M4 x 12 --- 12N",
+        "bounds_m": [
+          [
+            0.411,
+            -0.012,
+            -0.369
+          ],
+          [
+            0.418,
+            0.004,
+            -0.362
+          ]
+        ],
+        "vertex_count": 823,
+        "triangle_count": 959
+      }
+    },
+    "part_a3c656cd845d": {
+      "link": "moving_link_L",
+      "visible": true,
+      "signature": {
+        "name": "DIN 912 M4 x 12 --- 12N_DIN 912 M4 x 12 --- 12N",
+        "bounds_m": [
+          [
+            0.308,
+            -0.012,
+            -0.349
+          ],
+          [
+            0.315,
+            0.004,
+            -0.342
+          ]
+        ],
+        "vertex_count": 823,
+        "triangle_count": 959
+      }
+    },
+    "part_9f9dda6d27de": {
+      "link": "moving_link_L",
+      "visible": true,
+      "signature": {
+        "name": "DIN 912 M4 x 12 --- 12N_DIN 912 M4 x 12 --- 12N",
+        "bounds_m": [
+          [
+            0.2895,
+            -0.012,
+            -0.1895
+          ],
+          [
+            0.2965,
+            0.004,
+            -0.1825
+          ]
+        ],
+        "vertex_count": 823,
+        "triangle_count": 959
+      }
+    },
+    "part_464958278148": {
+      "link": "moving_link_L",
+      "visible": true,
+      "signature": {
+        "name": "ISO 7040-M4-N_ISO 7040-M4-N",
+        "bounds_m": [
+          [
+            0.411,
+            -0.0095,
+            -0.369541452
+          ],
+          [
+            0.418,
+            -0.0035,
+            -0.361458548
+          ]
+        ],
+        "vertex_count": 1151,
+        "triangle_count": 1348
+      }
+    },
+    "part_ad58e0aada52": {
+      "link": null,
+      "visible": true,
+      "signature": {
+        "name": "Mirrorbvme-0001218",
+        "bounds_m": [
+          [
+            -0.468,
+            -0.1395,
+            -0.1635
+          ],
+          [
+            -0.403852838,
+            -0.088,
+            0.0105
+          ]
+        ],
+        "vertex_count": 3212,
+        "triangle_count": 3048
+      }
+    },
+    "part_40207d186f65": {
+      "link": null,
+      "visible": true,
+      "signature": {
+        "name": "Mirrorbvme-0001467 (rockwell)",
+        "bounds_m": [
+          [
+            -0.428,
+            -0.057,
+            -0.38
+          ],
+          [
+            -0.288,
+            0.0785,
+            -0.1405
+          ]
+        ],
+        "vertex_count": 7330,
+        "triangle_count": 7008
+      }
+    },
+    "part_951ac4d2ce73": {
+      "link": null,
+      "visible": true,
+      "signature": {
+        "name": "Mirrorbvme-0002604",
+        "bounds_m": [
+          [
+            -0.474,
+            -0.144,
+            -0.5675
+          ],
+          [
+            -0.265,
+            -0.0,
+            0.0445
+          ]
+        ],
+        "vertex_count": 2248,
+        "triangle_count": 2068
+      }
+    },
+    "part_976aa18ade79": {
+      "link": null,
+      "visible": true,
+      "signature": {
+        "name": "Mirrorbvme-0002604",
+        "bounds_m": [
+          [
+            -0.474,
+            -0.144,
+            -0.5675
+          ],
+          [
+            -0.265,
+            -0.0,
+            0.0445
+          ]
+        ],
+        "vertex_count": 2248,
+        "triangle_count": 2068
+      }
+    },
+    "part_a5adf1a35741": {
+      "link": null,
+      "visible": true,
+      "signature": {
+        "name": "Mirrorbvme-0000686",
+        "bounds_m": [
+          [
+            -0.28,
+            -0.787,
+            -0.0565
+          ],
+          [
+            -0.264,
+            -0.034,
+            0.1185
+          ]
+        ],
+        "vertex_count": 6893,
+        "triangle_count": 7869
+      }
+    },
+    "part_e270cc1c2c91": {
+      "link": null,
+      "visible": true,
+      "signature": {
+        "name": "bvme-0001267",
+        "bounds_m": [
+          [
+            -0.28,
+            -0.7868,
+            -0.0503
+          ],
+          [
+            -0.279,
+            -0.0342,
+            -0.0227
+          ]
+        ],
+        "vertex_count": 1152,
+        "triangle_count": 1132
+      }
+    },
+    "part_83b3890d29ec": {
+      "link": null,
+      "visible": true,
+      "signature": {
+        "name": "0_518m_14_4_100_0___114_4_12P_A1_4",
+        "bounds_m": [
+          [
+            0.2145,
+            0.00985,
+            -0.355
+          ],
+          [
+            0.533502377,
+            0.07115,
+            -0.129993932
+          ]
+        ],
+        "vertex_count": 24520,
+        "triangle_count": 22456
+      }
+    },
+    "part_208bfe7697ff": {
+      "link": null,
+      "visible": true,
+      "signature": {
+        "name": "0_518m_14_4_100_0___114_4_12P_A1_4",
+        "bounds_m": [
+          [
+            -0.533502377,
+            0.00985,
+            -0.355
+          ],
+          [
+            -0.2145,
+            0.07115,
+            -0.129993932
+          ]
+        ],
+        "vertex_count": 24520,
+        "triangle_count": 22456
+      }
+    },
+    "part_a2783ec01389": {
+      "link": null,
+      "visible": true,
+      "signature": {
+        "name": "Mirrorbvme-0002605",
+        "bounds_m": [
+          [
+            -0.404,
+            -0.789,
+            -0.0185
+          ],
+          [
+            -0.28,
+            -0.757,
+            0.0035
+          ]
+        ],
+        "vertex_count": 1919,
+        "triangle_count": 2223
+      }
+    }
+  },
+  "metadata": {
+    "source_path": "D:\\AIK\\Project\\make_urdf\\data\\wsr-0002898 (simplified extended) 2025-11-23.STEP",
+    "import_mode": "xcaf",
+    "source_units": [
+      "millimetre"
+    ],
+    "system_unit_mm": 1.0,
+    "scale_to_m": 0.001,
+    "root_count": 1,
+    "occurrence_count": 58,
+    "part_count": 58,
+    "linear_deflection_m": 0.001,
+    "angular_deflection_rad": 0.35,
+    "load_seconds": 5.9185912000002645,
+    "occurrences": [
+      {
+        "id": "part_c5c8aa64c117",
+        "name": "bvme-0002591",
+        "source_label": "0:1:1:1/0:1:1:1:1/0:1:1:2:1",
+        "definition_label": "0:1:1:3",
+        "assembly_path": [
+          "bvme-0002898 (simplified extended)",
+          "bvme-0002590 (kuka extended)_Simplified",
+          "bvme-0002591"
+        ]
+      },
+      {
+        "id": "part_114e84e4798e",
+        "name": "bvme-0002662 (kuka)",
+        "source_label": "0:1:1:1/0:1:1:1:1/0:1:1:2:2",
+        "definition_label": "0:1:1:4",
+        "assembly_path": [
+          "bvme-0002898 (simplified extended)",
+          "bvme-0002590 (kuka extended)_Simplified",
+          "bvme-0002662 (kuka)"
+        ]
+      },
+      {
+        "id": "part_a55218b9db57",
+        "name": "bvme-0001989 (kuka)",
+        "source_label": "0:1:1:1/0:1:1:1:1/0:1:1:2:3",
+        "definition_label": "0:1:1:5",
+        "assembly_path": [
+          "bvme-0002898 (simplified extended)",
+          "bvme-0002590 (kuka extended)_Simplified",
+          "bvme-0001989 (kuka)"
+        ]
+      },
+      {
+        "id": "part_fdf381bbbec5",
+        "name": "bvme-0002609",
+        "source_label": "0:1:1:1/0:1:1:1:1/0:1:1:2:4",
+        "definition_label": "0:1:1:6",
+        "assembly_path": [
+          "bvme-0002898 (simplified extended)",
+          "bvme-0002590 (kuka extended)_Simplified",
+          "bvme-0002609"
+        ]
+      },
+      {
+        "id": "part_3b4ae09929d3",
+        "name": "bvme-0001231",
+        "source_label": "0:1:1:1/0:1:1:1:1/0:1:1:2:5",
+        "definition_label": "0:1:1:7",
+        "assembly_path": [
+          "bvme-0002898 (simplified extended)",
+          "bvme-0002590 (kuka extended)_Simplified",
+          "bvme-0001231"
+        ]
+      },
+      {
+        "id": "part_e7a2b1cb7bda",
+        "name": "bvme-0001232",
+        "source_label": "0:1:1:1/0:1:1:1:1/0:1:1:2:6",
+        "definition_label": "0:1:1:8",
+        "assembly_path": [
+          "bvme-0002898 (simplified extended)",
+          "bvme-0002590 (kuka extended)_Simplified",
+          "bvme-0001232"
+        ]
+      },
+      {
+        "id": "part_2c1a90fb4e07",
+        "name": "bvme-0002622",
+        "source_label": "0:1:1:1/0:1:1:1:1/0:1:1:2:7",
+        "definition_label": "0:1:1:9",
+        "assembly_path": [
+          "bvme-0002898 (simplified extended)",
+          "bvme-0002590 (kuka extended)_Simplified",
+          "bvme-0002622"
+        ]
+      },
+      {
+        "id": "part_9cb18ae1a138",
+        "name": "bvme-0001255",
+        "source_label": "0:1:1:1/0:1:1:1:2/0:1:1:10:1",
+        "definition_label": "0:1:1:11",
+        "assembly_path": [
+          "bvme-0002898 (simplified extended)",
+          "bvme-0002597 (kuka extended)_Fasteners suppressed",
+          "bvme-0001255"
+        ]
+      },
+      {
+        "id": "part_a41404b00971",
+        "name": "bvme-0002605",
+        "source_label": "0:1:1:1/0:1:1:1:2/0:1:1:10:2",
+        "definition_label": "0:1:1:12",
+        "assembly_path": [
+          "bvme-0002898 (simplified extended)",
+          "bvme-0002597 (kuka extended)_Fasteners suppressed",
+          "bvme-0002605"
+        ]
+      },
+      {
+        "id": "part_171d9f4c10f0",
+        "name": "bvme-0001254",
+        "source_label": "0:1:1:1/0:1:1:1:2/0:1:1:10:3",
+        "definition_label": "0:1:1:13",
+        "assembly_path": [
+          "bvme-0002898 (simplified extended)",
+          "bvme-0002597 (kuka extended)_Fasteners suppressed",
+          "bvme-0001254"
+        ]
+      },
+      {
+        "id": "part_8721f7188b63",
+        "name": "bvme-0001267",
+        "source_label": "0:1:1:1/0:1:1:1:2/0:1:1:10:4",
+        "definition_label": "0:1:1:14",
+        "assembly_path": [
+          "bvme-0002898 (simplified extended)",
+          "bvme-0002597 (kuka extended)_Fasteners suppressed",
+          "bvme-0001267"
+        ]
+      },
+      {
+        "id": "part_35b15f6c2933",
+        "name": "bvme-0001209",
+        "source_label": "0:1:1:1/0:1:1:1:3/0:1:1:15:1",
+        "definition_label": "0:1:1:16",
+        "assembly_path": [
+          "bvme-0002898 (simplified extended)",
+          "bvme-0002595 (extended)_Simplified",
+          "bvme-0001209"
+        ]
+      },
+      {
+        "id": "part_05dfc2999671",
+        "name": "bvme-0001210",
+        "source_label": "0:1:1:1/0:1:1:1:3/0:1:1:15:2",
+        "definition_label": "0:1:1:17",
+        "assembly_path": [
+          "bvme-0002898 (simplified extended)",
+          "bvme-0002595 (extended)_Simplified",
+          "bvme-0001210"
+        ]
+      },
+      {
+        "id": "part_4dd653b98914",
+        "name": "bvme-0002596",
+        "source_label": "0:1:1:1/0:1:1:1:3/0:1:1:15:3",
+        "definition_label": "0:1:1:18",
+        "assembly_path": [
+          "bvme-0002898 (simplified extended)",
+          "bvme-0002595 (extended)_Simplified",
+          "bvme-0002596"
+        ]
+      },
+      {
+        "id": "part_686bf7bddb4f",
+        "name": "bvme-0001214",
+        "source_label": "0:1:1:1/0:1:1:1:3/0:1:1:15:4",
+        "definition_label": "0:1:1:19",
+        "assembly_path": [
+          "bvme-0002898 (simplified extended)",
+          "bvme-0002595 (extended)_Simplified",
+          "bvme-0001214"
+        ]
+      },
+      {
+        "id": "part_35d798c2b5c0",
+        "name": "bvme-0001244",
+        "source_label": "0:1:1:1/0:1:1:1:3/0:1:1:15:5",
+        "definition_label": "0:1:1:20",
+        "assembly_path": [
+          "bvme-0002898 (simplified extended)",
+          "bvme-0002595 (extended)_Simplified",
+          "bvme-0001244"
+        ]
+      },
+      {
+        "id": "part_b2a0ffb20b5d",
+        "name": "101388",
+        "source_label": "0:1:1:1/0:1:1:1:3/0:1:1:15:6",
+        "definition_label": "0:1:1:21",
+        "assembly_path": [
+          "bvme-0002898 (simplified extended)",
+          "bvme-0002595 (extended)_Simplified",
+          "101388"
+        ]
+      },
+      {
+        "id": "part_4d8cc933395d",
+        "name": "_153164 QSSF-1_4-6-B---(part)",
+        "source_label": "0:1:1:1/0:1:1:1:3/0:1:1:15:7/0:1:1:22:1",
+        "definition_label": "0:1:1:23",
+        "assembly_path": [
+          "bvme-0002898 (simplified extended)",
+          "bvme-0002595 (extended)_Simplified",
+          "153164_QSSF-1_4-6-B",
+          "_153164 QSSF-1_4-6-B---(part)"
+        ]
+      },
+      {
+        "id": "part_ff9339a15ca7",
+        "name": "_Flachmutter M14X1-4-17",
+        "source_label": "0:1:1:1/0:1:1:1:3/0:1:1:15:7/0:1:1:22:2",
+        "definition_label": "0:1:1:24",
+        "assembly_path": [
+          "bvme-0002898 (simplified extended)",
+          "bvme-0002595 (extended)_Simplified",
+          "153164_QSSF-1_4-6-B",
+          "_Flachmutter M14X1-4-17"
+        ]
+      },
+      {
+        "id": "part_05eb37a6dd81",
+        "name": "perma_FLEX_60_Rev_A",
+        "source_label": "0:1:1:1/0:1:1:1:3/0:1:1:15:8",
+        "definition_label": "0:1:1:25",
+        "assembly_path": [
+          "bvme-0002898 (simplified extended)",
+          "bvme-0002595 (extended)_Simplified",
+          "perma_FLEX_60_Rev_A"
+        ]
+      },
+      {
+        "id": "part_45c52e56f7fe",
+        "name": "bvme-0002612",
+        "source_label": "0:1:1:1/0:1:1:1:3/0:1:1:15:9/0:1:1:26:1",
+        "definition_label": "0:1:1:27",
+        "assembly_path": [
+          "bvme-0002898 (simplified extended)",
+          "bvme-0002595 (extended)_Simplified",
+          "bvme-0002658",
+          "bvme-0002612"
+        ]
+      },
+      {
+        "id": "part_c575f0678454",
+        "name": "DIN 929-M4-C_DIN 929-M4-C",
+        "source_label": "0:1:1:1/0:1:1:1:3/0:1:1:15:9/0:1:1:26:2",
+        "definition_label": "0:1:1:28",
+        "assembly_path": [
+          "bvme-0002898 (simplified extended)",
+          "bvme-0002595 (extended)_Simplified",
+          "bvme-0002658",
+          "DIN 929-M4-C_DIN 929-M4-C"
+        ]
+      },
+      {
+        "id": "part_cacf05e0e7e3",
+        "name": "DIN 929-M4-C_DIN 929-M4-C",
+        "source_label": "0:1:1:1/0:1:1:1:3/0:1:1:15:9/0:1:1:26:3",
+        "definition_label": "0:1:1:28",
+        "assembly_path": [
+          "bvme-0002898 (simplified extended)",
+          "bvme-0002595 (extended)_Simplified",
+          "bvme-0002658",
+          "DIN 929-M4-C_DIN 929-M4-C"
+        ]
+      },
+      {
+        "id": "part_7689d651f07f",
+        "name": "DIN 929-M4-C_DIN 929-M4-C",
+        "source_label": "0:1:1:1/0:1:1:1:3/0:1:1:15:9/0:1:1:26:4",
+        "definition_label": "0:1:1:28",
+        "assembly_path": [
+          "bvme-0002898 (simplified extended)",
+          "bvme-0002595 (extended)_Simplified",
+          "bvme-0002658",
+          "DIN 929-M4-C_DIN 929-M4-C"
+        ]
+      },
+      {
+        "id": "part_cb2080890586",
+        "name": "bvme-0002656",
+        "source_label": "0:1:1:1/0:1:1:1:3/0:1:1:15:10/0:1:1:29:1",
+        "definition_label": "0:1:1:30",
+        "assembly_path": [
+          "bvme-0002898 (simplified extended)",
+          "bvme-0002595 (extended)_Simplified",
+          "bvme-0002657",
+          "bvme-0002656"
+        ]
+      },
+      {
+        "id": "part_94542816cf30",
+        "name": "bvme-0002655",
+        "source_label": "0:1:1:1/0:1:1:1:3/0:1:1:15:10/0:1:1:29:2",
+        "definition_label": "0:1:1:31",
+        "assembly_path": [
+          "bvme-0002898 (simplified extended)",
+          "bvme-0002595 (extended)_Simplified",
+          "bvme-0002657",
+          "bvme-0002655"
+        ]
+      },
+      {
+        "id": "part_528ef44ae28f",
+        "name": "bvme-0001214",
+        "source_label": "0:1:1:1/0:1:1:1:4/0:1:1:32:1",
+        "definition_label": "0:1:1:19",
+        "assembly_path": [
+          "bvme-0002898 (simplified extended)",
+          "bvme-0002594 (extended)_Simplified",
+          "bvme-0001214"
+        ]
+      },
+      {
+        "id": "part_7ffa2dc19368",
+        "name": "bvme-0001209",
+        "source_label": "0:1:1:1/0:1:1:1:4/0:1:1:32:2",
+        "definition_label": "0:1:1:16",
+        "assembly_path": [
+          "bvme-0002898 (simplified extended)",
+          "bvme-0002594 (extended)_Simplified",
+          "bvme-0001209"
+        ]
+      },
+      {
+        "id": "part_b7476c2088a8",
+        "name": "bvme-0001210",
+        "source_label": "0:1:1:1/0:1:1:1:4/0:1:1:32:3",
+        "definition_label": "0:1:1:17",
+        "assembly_path": [
+          "bvme-0002898 (simplified extended)",
+          "bvme-0002594 (extended)_Simplified",
+          "bvme-0001210"
+        ]
+      },
+      {
+        "id": "part_e92b58eb5035",
+        "name": "bvme-0002608",
+        "source_label": "0:1:1:1/0:1:1:1:4/0:1:1:32:4",
+        "definition_label": "0:1:1:33",
+        "assembly_path": [
+          "bvme-0002898 (simplified extended)",
+          "bvme-0002594 (extended)_Simplified",
+          "bvme-0002608"
+        ]
+      },
+      {
+        "id": "part_c0c0a08b3028",
+        "name": "bvme-0001244",
+        "source_label": "0:1:1:1/0:1:1:1:4/0:1:1:32:5",
+        "definition_label": "0:1:1:20",
+        "assembly_path": [
+          "bvme-0002898 (simplified extended)",
+          "bvme-0002594 (extended)_Simplified",
+          "bvme-0001244"
+        ]
+      },
+      {
+        "id": "part_5bc4e1762e21",
+        "name": "101388",
+        "source_label": "0:1:1:1/0:1:1:1:4/0:1:1:32:6",
+        "definition_label": "0:1:1:21",
+        "assembly_path": [
+          "bvme-0002898 (simplified extended)",
+          "bvme-0002594 (extended)_Simplified",
+          "101388"
+        ]
+      },
+      {
+        "id": "part_166aa5b7816a",
+        "name": "perma_FLEX_60_Rev_A",
+        "source_label": "0:1:1:1/0:1:1:1:4/0:1:1:32:7",
+        "definition_label": "0:1:1:25",
+        "assembly_path": [
+          "bvme-0002898 (simplified extended)",
+          "bvme-0002594 (extended)_Simplified",
+          "perma_FLEX_60_Rev_A"
+        ]
+      },
+      {
+        "id": "part_194f80848892",
+        "name": "_153164 QSSF-1_4-6-B---(part)",
+        "source_label": "0:1:1:1/0:1:1:1:4/0:1:1:32:8/0:1:1:22:1",
+        "definition_label": "0:1:1:23",
+        "assembly_path": [
+          "bvme-0002898 (simplified extended)",
+          "bvme-0002594 (extended)_Simplified",
+          "153164_QSSF-1_4-6-B",
+          "_153164 QSSF-1_4-6-B---(part)"
+        ]
+      },
+      {
+        "id": "part_654b45b31bc2",
+        "name": "_Flachmutter M14X1-4-17",
+        "source_label": "0:1:1:1/0:1:1:1:4/0:1:1:32:8/0:1:1:22:2",
+        "definition_label": "0:1:1:24",
+        "assembly_path": [
+          "bvme-0002898 (simplified extended)",
+          "bvme-0002594 (extended)_Simplified",
+          "153164_QSSF-1_4-6-B",
+          "_Flachmutter M14X1-4-17"
+        ]
+      },
+      {
+        "id": "part_13d4ae17c970",
+        "name": "bvme-0002612",
+        "source_label": "0:1:1:1/0:1:1:1:4/0:1:1:32:9/0:1:1:26:1",
+        "definition_label": "0:1:1:27",
+        "assembly_path": [
+          "bvme-0002898 (simplified extended)",
+          "bvme-0002594 (extended)_Simplified",
+          "bvme-0002658",
+          "bvme-0002612"
+        ]
+      },
+      {
+        "id": "part_b6501e8531cd",
+        "name": "DIN 929-M4-C_DIN 929-M4-C",
+        "source_label": "0:1:1:1/0:1:1:1:4/0:1:1:32:9/0:1:1:26:2",
+        "definition_label": "0:1:1:28",
+        "assembly_path": [
+          "bvme-0002898 (simplified extended)",
+          "bvme-0002594 (extended)_Simplified",
+          "bvme-0002658",
+          "DIN 929-M4-C_DIN 929-M4-C"
+        ]
+      },
+      {
+        "id": "part_78c8b320e091",
+        "name": "DIN 929-M4-C_DIN 929-M4-C",
+        "source_label": "0:1:1:1/0:1:1:1:4/0:1:1:32:9/0:1:1:26:3",
+        "definition_label": "0:1:1:28",
+        "assembly_path": [
+          "bvme-0002898 (simplified extended)",
+          "bvme-0002594 (extended)_Simplified",
+          "bvme-0002658",
+          "DIN 929-M4-C_DIN 929-M4-C"
+        ]
+      },
+      {
+        "id": "part_32274a665909",
+        "name": "DIN 929-M4-C_DIN 929-M4-C",
+        "source_label": "0:1:1:1/0:1:1:1:4/0:1:1:32:9/0:1:1:26:4",
+        "definition_label": "0:1:1:28",
+        "assembly_path": [
+          "bvme-0002898 (simplified extended)",
+          "bvme-0002594 (extended)_Simplified",
+          "bvme-0002658",
+          "DIN 929-M4-C_DIN 929-M4-C"
+        ]
+      },
+      {
+        "id": "part_cba77c05e593",
+        "name": "bvme-0002656",
+        "source_label": "0:1:1:1/0:1:1:1:4/0:1:1:32:10/0:1:1:29:1",
+        "definition_label": "0:1:1:30",
+        "assembly_path": [
+          "bvme-0002898 (simplified extended)",
+          "bvme-0002594 (extended)_Simplified",
+          "bvme-0002657",
+          "bvme-0002656"
+        ]
+      },
+      {
+        "id": "part_0989020c5bcc",
+        "name": "bvme-0002655",
+        "source_label": "0:1:1:1/0:1:1:1:4/0:1:1:32:10/0:1:1:29:2",
+        "definition_label": "0:1:1:31",
+        "assembly_path": [
+          "bvme-0002898 (simplified extended)",
+          "bvme-0002594 (extended)_Simplified",
+          "bvme-0002657",
+          "bvme-0002655"
+        ]
+      },
+      {
+        "id": "part_04dd4c85eb80",
+        "name": "bvme-0001467 (rockwell)",
+        "source_label": "0:1:1:1/0:1:1:1:5",
+        "definition_label": "0:1:1:34",
+        "assembly_path": [
+          "bvme-0002898 (simplified extended)",
+          "bvme-0001467 (rockwell)"
+        ]
+      },
+      {
+        "id": "part_f7a892003f5d",
+        "name": "bvme-0002604",
+        "source_label": "0:1:1:1/0:1:1:1:6",
+        "definition_label": "0:1:1:35",
+        "assembly_path": [
+          "bvme-0002898 (simplified extended)",
+          "bvme-0002604"
+        ]
+      },
+      {
+        "id": "part_b3ad170c39b6",
+        "name": "bvme-0001463 (rockwell)",
+        "source_label": "0:1:1:1/0:1:1:1:7",
+        "definition_label": "0:1:1:36",
+        "assembly_path": [
+          "bvme-0002898 (simplified extended)",
+          "bvme-0001463 (rockwell)"
+        ]
+      },
+      {
+        "id": "part_b38a4c94325e",
+        "name": "Mirrorbvme-0001463 (rockwell)",
+        "source_label": "0:1:1:1/0:1:1:1:8",
+        "definition_label": "0:1:1:37",
+        "assembly_path": [
+          "bvme-0002898 (simplified extended)",
+          "Mirrorbvme-0001463 (rockwell)"
+        ]
+      },
+      {
+        "id": "part_381a29415f8f",
+        "name": "DIN 912 M4 x 12 --- 12N_DIN 912 M4 x 12 --- 12N",
+        "source_label": "0:1:1:1/0:1:1:1:9",
+        "definition_label": "0:1:1:38",
+        "assembly_path": [
+          "bvme-0002898 (simplified extended)",
+          "DIN 912 M4 x 12 --- 12N_DIN 912 M4 x 12 --- 12N"
+        ]
+      },
+      {
+        "id": "part_a3c656cd845d",
+        "name": "DIN 912 M4 x 12 --- 12N_DIN 912 M4 x 12 --- 12N",
+        "source_label": "0:1:1:1/0:1:1:1:10",
+        "definition_label": "0:1:1:38",
+        "assembly_path": [
+          "bvme-0002898 (simplified extended)",
+          "DIN 912 M4 x 12 --- 12N_DIN 912 M4 x 12 --- 12N"
+        ]
+      },
+      {
+        "id": "part_9f9dda6d27de",
+        "name": "DIN 912 M4 x 12 --- 12N_DIN 912 M4 x 12 --- 12N",
+        "source_label": "0:1:1:1/0:1:1:1:11",
+        "definition_label": "0:1:1:38",
+        "assembly_path": [
+          "bvme-0002898 (simplified extended)",
+          "DIN 912 M4 x 12 --- 12N_DIN 912 M4 x 12 --- 12N"
+        ]
+      },
+      {
+        "id": "part_464958278148",
+        "name": "ISO 7040-M4-N_ISO 7040-M4-N",
+        "source_label": "0:1:1:1/0:1:1:1:12",
+        "definition_label": "0:1:1:39",
+        "assembly_path": [
+          "bvme-0002898 (simplified extended)",
+          "ISO 7040-M4-N_ISO 7040-M4-N"
+        ]
+      },
+      {
+        "id": "part_ad58e0aada52",
+        "name": "Mirrorbvme-0001218",
+        "source_label": "0:1:1:1/0:1:1:1:13",
+        "definition_label": "0:1:1:40",
+        "assembly_path": [
+          "bvme-0002898 (simplified extended)",
+          "Mirrorbvme-0001218"
+        ]
+      },
+      {
+        "id": "part_40207d186f65",
+        "name": "Mirrorbvme-0001467 (rockwell)",
+        "source_label": "0:1:1:1/0:1:1:1:14",
+        "definition_label": "0:1:1:41",
+        "assembly_path": [
+          "bvme-0002898 (simplified extended)",
+          "Mirrorbvme-0001467 (rockwell)"
+        ]
+      },
+      {
+        "id": "part_951ac4d2ce73",
+        "name": "Mirrorbvme-0002604",
+        "source_label": "0:1:1:1/0:1:1:1:15",
+        "definition_label": "0:1:1:42",
+        "assembly_path": [
+          "bvme-0002898 (simplified extended)",
+          "Mirrorbvme-0002604"
+        ]
+      },
+      {
+        "id": "part_976aa18ade79",
+        "name": "Mirrorbvme-0002604",
+        "source_label": "0:1:1:1/0:1:1:1:16",
+        "definition_label": "0:1:1:42",
+        "assembly_path": [
+          "bvme-0002898 (simplified extended)",
+          "Mirrorbvme-0002604"
+        ]
+      },
+      {
+        "id": "part_a5adf1a35741",
+        "name": "Mirrorbvme-0000686",
+        "source_label": "0:1:1:1/0:1:1:1:17/0:1:1:43:1",
+        "definition_label": "0:1:1:44",
+        "assembly_path": [
+          "bvme-0002898 (simplified extended)",
+          "Mirrorbvme-0002597 (kuka extended)_Simplified",
+          "Mirrorbvme-0000686"
+        ]
+      },
+      {
+        "id": "part_e270cc1c2c91",
+        "name": "bvme-0001267",
+        "source_label": "0:1:1:1/0:1:1:1:17/0:1:1:43:2",
+        "definition_label": "0:1:1:14",
+        "assembly_path": [
+          "bvme-0002898 (simplified extended)",
+          "Mirrorbvme-0002597 (kuka extended)_Simplified",
+          "bvme-0001267"
+        ]
+      },
+      {
+        "id": "part_83b3890d29ec",
+        "name": "0_518m_14_4_100_0___114_4_12P_A1_4",
+        "source_label": "0:1:1:1/0:1:1:1:18",
+        "definition_label": "0:1:1:45",
+        "assembly_path": [
+          "bvme-0002898 (simplified extended)",
+          "0_518m_14_4_100_0___114_4_12P_A1_4"
+        ]
+      },
+      {
+        "id": "part_208bfe7697ff",
+        "name": "0_518m_14_4_100_0___114_4_12P_A1_4",
+        "source_label": "0:1:1:1/0:1:1:1:19",
+        "definition_label": "0:1:1:45",
+        "assembly_path": [
+          "bvme-0002898 (simplified extended)",
+          "0_518m_14_4_100_0___114_4_12P_A1_4"
+        ]
+      },
+      {
+        "id": "part_a2783ec01389",
+        "name": "Mirrorbvme-0002605",
+        "source_label": "0:1:1:1/0:1:1:1:20",
+        "definition_label": "0:1:1:46",
+        "assembly_path": [
+          "bvme-0002898 (simplified extended)",
+          "Mirrorbvme-0002605"
+        ]
+      }
+    ],
+    "bounds_m": [
+      [
+        -0.533502377234201,
+        -0.8080000000076822,
+        -0.5675000000011744
+      ],
+      [
+        0.5335023772342029,
+        0.0834999999999988,
+        0.40149999999903446
+      ]
+    ],
+    "step_warnings": [],
+    "isolated_step_import": {
+      "returncode": 0,
+      "elapsed_seconds": 6.844900599999164,
+      "parallel": false
+    },
+    "manual_tree": true
+  }
+}

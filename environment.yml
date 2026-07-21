@@ -1,0 +1,14 @@
+channels:
+  - conda-forge
+dependencies:
+  - python=3.13
+  - numpy>=2.0
+  # Avoid the incompatible MKL/LLVM-OpenMP delay-load combination currently
+  # selected on Windows; the CAD worker only needs standard NumPy operations.
+  - "libblas=*=*openblas"
+  - pyside6=6.11.1
+  - pytest>=9.0
+  - pip
+  - pip:
+      - vtk==9.6.2
+      - cadquery-ocp-novtk==7.9.3.1.1
