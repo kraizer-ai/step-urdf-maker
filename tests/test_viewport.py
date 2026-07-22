@@ -82,19 +82,19 @@ def test_replacing_parts_preserves_camera_and_candidate_axes_can_be_highlighted(
 
         viewport.set_candidate_axes(
             (0.5, 0.5, 0.0),
-            {"X": (1, 0, 0), "Y": (0, 1, 0), "Z": (0, 0, 1)},
+            {"A": (1, 0, 0), "B": (0, 1, 0), "C": (0, 0, 1)},
             0.25,
-            selected="Y",
+            selected="B",
         )
-        assert set(viewport._candidate_axis_actors) == {"X", "Y", "Z"}
+        assert set(viewport._candidate_axis_actors) == {"A", "B", "C"}
         assert (
-            viewport._candidate_axis_actors["Y"].GetProperty().GetLineWidth()
-            > viewport._candidate_axis_actors["X"].GetProperty().GetLineWidth()
+            viewport._candidate_axis_actors["B"].GetProperty().GetLineWidth()
+            > viewport._candidate_axis_actors["A"].GetProperty().GetLineWidth()
         )
-        viewport.highlight_candidate_axis("Z")
+        viewport.highlight_candidate_axis("C")
         assert (
-            viewport._candidate_axis_actors["Z"].GetProperty().GetLineWidth()
-            > viewport._candidate_axis_actors["Y"].GetProperty().GetLineWidth()
+            viewport._candidate_axis_actors["C"].GetProperty().GetLineWidth()
+            > viewport._candidate_axis_actors["B"].GetProperty().GetLineWidth()
         )
     finally:
         viewport._vtk_widget.Finalize()

@@ -75,6 +75,7 @@ class NewLinkDialog(QDialog):
 
     parentPreviewRequested = Signal(str)
     axisPreviewRequested = Signal(object)
+    motionPreviewRequested = Signal()
 
     def __init__(
         self,
@@ -87,19 +88,14 @@ class NewLinkDialog(QDialog):
     ) -> None:
         super().__init__(parent)
         self._candidate_origin: np.ndarray | None = None
+        self._axis_candidates: dict[str, np.ndarray] = {}
         self.setWindowTitle("자식 링크와 동작 만들기")
-        self.setMinimumWidth(380)
+        self.setMinimumWidth(420)
         root = QVBoxLayout(self)
-        if selected_count:
-            summary_text = (
-                f"선택한 형상 {selected_count}개를 하나의 강체 링크로 만들고, "
-                "부모에 대한 움직임을 정의합니다."
-            )
-        else:
-            summary_text = (
-                "빈 자식 링크를 먼저 만듭니다. 생성 후 형상을 선택하여 "
-                "'선택 형상을 현재 링크에 넣기'로 배정할 수 있습니다."
-            )
+        summary_text = (
+            f"선택한 자식 형상 {selected_count}개를 하나의 강체 링크로 만들고, "
+            "부모 위에서 회전축과 움직임을 확인합니다."
+        )
         summary = QLabel(summary_text)
         summary.setWordWrap(True)
         root.addWidget(summary)
@@ -117,6 +113,7 @@ class NewLinkDialog(QDialog):
         self.type_combo = _NoWheelComboBox()
         self.type_combo.addItems(["fixed", "prismatic", "revolute", "continuous"])
         self.type_combo.setCurrentText("prismatic")
+        self.origin_editor = Vector3Editor(decimals=3, step=1.0)
         self.axis_editor = Vector3Editor(minimum=-1.0, maximum=1.0, decimals=4, step=0.1)
         self.axis_editor.setValue((1.0, 0.0, 0.0))
 
@@ -149,12 +146,39 @@ class NewLinkDialog(QDialog):
             )
             shortcuts.addWidget(button, index % 2, index // 2)
         axis_layout.addLayout(shortcuts)
+        geometry_shortcuts = QHBoxLayout()
+        self.geometry_axis_buttons: dict[str, QPushButton] = {}
+        for name, label, color in (
+            ("A", "A 장축", "#dc4943"),
+            ("B", "B 중간축", "#38b95a"),
+            ("C", "C 두께/노멀", "#4b7fe8"),
+        ):
+            button = QPushButton(label)
+            button.setEnabled(False)
+            button.setStyleSheet(f"QPushButton {{ border: 2px solid {color}; }}")
+            button.clicked.connect(
+                lambda _checked=False, candidate=name: self.select_candidate_axis(candidate)
+            )
+            geometry_shortcuts.addWidget(button)
+            self.geometry_axis_buttons[name] = button
+        axis_layout.addLayout(geometry_shortcuts)
         axis_hint = QLabel(
-            "3D의 빨강 X · 초록 Y · 파랑 Z 후보축과 같은 방향입니다. "
-            "축의 반대 회전은 − 버튼을 선택하세요."
+            "A/B/C는 선택한 자식 형상의 주축입니다. 회전 관절에서는 "
+            "평면에 수직인 C 두께/노멀 축이 먼저 추천됩니다. 반대 회전은 −축을 사용하세요."
         )
         axis_hint.setWordWrap(True)
         axis_layout.addWidget(axis_hint)
+
+        preview_box = QWidget()
+        preview_layout = QHBoxLayout(preview_box)
+        preview_layout.setContentsMargins(0, 0, 0, 0)
+        self.preview_slider = _NoWheelSlider(Qt.Orientation.Horizontal)
+        self.preview_slider.setRange(-100, 100)
+        self.preview_slider.setValue(0)
+        self.preview_value_label = QLabel("0°")
+        self.preview_value_label.setMinimumWidth(58)
+        preview_layout.addWidget(self.preview_slider, 1)
+        preview_layout.addWidget(self.preview_value_label)
 
         limit_box = QWidget()
         limit_layout = QHBoxLayout(limit_box)
@@ -176,7 +200,9 @@ class NewLinkDialog(QDialog):
         form.addRow("링크 이름", self.name_edit)
         form.addRow("부모 링크", self.parent_combo)
         form.addRow("동작 종류", self.type_combo)
+        form.addRow("관절 중심 (mm)", self.origin_editor)
         form.addRow("이동/회전 방향", axis_box)
+        form.addRow("동작 미리보기", preview_box)
         form.addRow("0/1 실제값", limit_box)
         root.addLayout(form)
         self.buttons = QDialogButtonBox(
@@ -187,7 +213,9 @@ class NewLinkDialog(QDialog):
         root.addWidget(self.buttons)
         self.type_combo.currentTextChanged.connect(self._refresh_type)
         self.parent_combo.currentTextChanged.connect(self.parentPreviewRequested.emit)
-        self.axis_editor.valueChanged.connect(self.axisPreviewRequested.emit)
+        self.origin_editor.valueChanged.connect(self._origin_value_changed)
+        self.axis_editor.valueChanged.connect(self._axis_value_changed)
+        self.preview_slider.valueChanged.connect(self._preview_slider_changed)
         self._refresh_type(self.type_combo.currentText())
 
     def set_candidate_origin(self, value: Iterable[float]) -> None:
@@ -195,13 +223,50 @@ class NewLinkDialog(QDialog):
         if origin.shape != (3,) or not np.all(np.isfinite(origin)):
             raise ValueError("Candidate origin must contain three finite values")
         self._candidate_origin = origin
+        self.origin_editor.setValue(origin * 1000.0)
+
+    def set_axis_candidates(self, values: dict[str, Iterable[float]]) -> None:
+        candidates: dict[str, np.ndarray] = {}
+        for raw_name, raw_value in values.items():
+            name = str(raw_name).upper().lstrip("+-")
+            vector = np.asarray(tuple(raw_value), dtype=float)
+            norm = float(np.linalg.norm(vector))
+            if name and vector.shape == (3,) and np.all(np.isfinite(vector)) and norm > 1.0e-12:
+                candidates[name] = vector / norm
+        self._axis_candidates = candidates
+        for name, button in self.geometry_axis_buttons.items():
+            button.setEnabled(name in candidates)
+        recommended = "C" if self.type_combo.currentText() in {"revolute", "continuous"} else "A"
+        if recommended in candidates:
+            self.select_candidate_axis(recommended)
+
+    def candidate_axes(self) -> dict[str, np.ndarray]:
+        return {name: value.copy() for name, value in self._axis_candidates.items()}
+
+    def matching_candidate(self, value: Iterable[float]) -> str | None:
+        vector = np.asarray(tuple(value), dtype=float)
+        norm = float(np.linalg.norm(vector))
+        if vector.shape != (3,) or not np.all(np.isfinite(vector)) or norm <= 1.0e-12:
+            return None
+        unit = vector / norm
+        if not self._axis_candidates:
+            return None
+        name, score = max(
+            (
+                (candidate_name, abs(float(np.dot(unit, candidate))))
+                for candidate_name, candidate in self._axis_candidates.items()
+            ),
+            key=lambda item: item[1],
+        )
+        return name if score >= 0.995 else None
 
     def select_candidate_axis(self, name: str) -> None:
-        vectors = {
+        vectors: dict[str, Iterable[float]] = {
             "X": (1.0, 0.0, 0.0),
             "Y": (0.0, 1.0, 0.0),
             "Z": (0.0, 0.0, 1.0),
         }
+        vectors.update(self._axis_candidates)
         axis = str(name).upper().lstrip("+-")
         if axis in vectors:
             self._choose_candidate_axis(vectors[axis])
@@ -209,6 +274,35 @@ class NewLinkDialog(QDialog):
     def _choose_candidate_axis(self, value: Iterable[float]) -> None:
         self.axis_editor.setValue(value)
         self.axisPreviewRequested.emit(self.axis_editor.value())
+        self.motionPreviewRequested.emit()
+
+    def _origin_value_changed(self, value: Iterable[float]) -> None:
+        self._candidate_origin = np.asarray(tuple(value), dtype=float) / 1000.0
+        self.motionPreviewRequested.emit()
+
+    def _axis_value_changed(self, value: Iterable[float]) -> None:
+        self.axisPreviewRequested.emit(value)
+        self.motionPreviewRequested.emit()
+
+    def _preview_slider_changed(self, _value: int) -> None:
+        kind = self.type_combo.currentText()
+        position = self.preview_position_si()
+        if kind in {"revolute", "continuous"}:
+            self.preview_value_label.setText(f"{math.degrees(position):.0f}°")
+        elif kind == "prismatic":
+            self.preview_value_label.setText(f"{position * 1000.0:.0f} mm")
+        else:
+            self.preview_value_label.setText("—")
+        self.motionPreviewRequested.emit()
+
+    def preview_position_si(self) -> float:
+        fraction = self.preview_slider.value() / 100.0
+        kind = self.type_combo.currentText()
+        if kind in {"revolute", "continuous"}:
+            return fraction * math.radians(45.0)
+        if kind == "prismatic":
+            return fraction * 0.02
+        return 0.0
 
     def _refresh_type(self, joint_type: str) -> None:
         scalar = joint_type in {"prismatic", "revolute", "continuous"}
@@ -217,9 +311,14 @@ class NewLinkDialog(QDialog):
         self.upper_spin.setEnabled(joint_type != "fixed")
         angular = joint_type in {"revolute", "continuous"}
         self.units_label.setText("deg" if angular else ("mm" if joint_type == "prismatic" else "—"))
+        self.preview_slider.setEnabled(joint_type != "fixed")
         if joint_type == "continuous":
             self.lower_spin.setValue(-180.0)
             self.upper_spin.setValue(180.0)
+        recommended = "C" if angular else "A"
+        if recommended in self._axis_candidates:
+            self.select_candidate_axis(recommended)
+        self._preview_slider_changed(self.preview_slider.value())
 
     def values(self) -> dict[str, Any]:
         kind = self.type_combo.currentText()
@@ -239,11 +338,7 @@ class NewLinkDialog(QDialog):
             "parent": self.parent_combo.currentText(),
             "joint_type": kind,
             "axis": axis,
-            "origin_xyz": (
-                None
-                if self._candidate_origin is None
-                else self._candidate_origin.copy()
-            ),
+            "origin_xyz": self.origin_editor.value() / 1000.0,
             "lower": lower,
             "upper": upper,
         }

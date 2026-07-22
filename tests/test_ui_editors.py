@@ -187,6 +187,34 @@ def test_generic_new_link_dialog_converts_units() -> None:
     assert math.isclose(values["upper"], math.pi / 4.0)
 
 
+def test_new_link_dialog_recommends_geometry_normal_and_previews_rotation() -> None:
+    _app()
+    dialog = NewLinkDialog(
+        ["base_link"],
+        default_parent="base_link",
+        selected_count=1,
+    )
+    dialog.set_axis_candidates(
+        {
+            "A": (1.0, 0.0, 0.0),
+            "B": (0.0, 1.0, 0.0),
+            "C": (0.0, 0.0, 1.0),
+        }
+    )
+    assert tuple(dialog.axis_editor.value()) == (1.0, 0.0, 0.0)
+
+    dialog.type_combo.setCurrentText("revolute")
+    assert tuple(dialog.axis_editor.value()) == (0.0, 0.0, 1.0)
+    assert dialog.matching_candidate((0.0, 0.0, -1.0)) == "C"
+    dialog.preview_slider.setValue(100)
+    assert math.isclose(dialog.preview_position_si(), math.pi / 4.0)
+    assert dialog.preview_value_label.text() == "45°"
+
+    dialog.set_candidate_origin((0.4, -0.2, 0.1))
+    dialog.origin_editor.setValue((410.0, -190.0, 120.0))
+    np.testing.assert_allclose(dialog.values()["origin_xyz"], (0.41, -0.19, 0.12))
+
+
 def test_new_link_dialog_supports_negative_axis_and_validates_zero_one_order() -> None:
     _app()
     dialog = NewLinkDialog(

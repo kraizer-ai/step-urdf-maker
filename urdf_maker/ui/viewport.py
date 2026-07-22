@@ -791,7 +791,7 @@ else:
             *,
             selected: str = "X",
         ) -> None:
-            """Show X/Y/Z joint-axis candidates through one center."""
+            """Show named joint-axis candidates through one center."""
 
             center = np.asarray(origin, dtype=np.float64).reshape(-1)
             if center.shape != (3,) or not np.all(np.isfinite(center)):
@@ -801,14 +801,17 @@ else:
                 raise ValueError("Candidate-axis length must be positive")
 
             self.clear_candidate_axes(render=False)
-            colors = {
-                "X": (0.95, 0.18, 0.14),
-                "Y": (0.18, 0.86, 0.30),
-                "Z": (0.20, 0.48, 1.0),
-            }
-            for raw_name, raw_direction in directions.items():
+            palette = (
+                (0.95, 0.18, 0.14),
+                (0.18, 0.86, 0.30),
+                (0.20, 0.48, 1.0),
+                (0.92, 0.70, 0.16),
+            )
+            for color_index, (raw_name, raw_direction) in enumerate(
+                directions.items()
+            ):
                 name = str(raw_name).upper().lstrip("+-")
-                if name not in colors:
+                if not name:
                     continue
                 direction = np.asarray(raw_direction, dtype=np.float64).reshape(-1)
                 if direction.shape != (3,) or not np.all(np.isfinite(direction)):
@@ -825,7 +828,7 @@ else:
                 actor = vtkActor()
                 actor.SetMapper(mapper)
                 actor.SetPickable(True)
-                actor.GetProperty().SetColor(*colors[name])
+                actor.GetProperty().SetColor(*palette[color_index % len(palette)])
                 actor.GetProperty().SetAmbient(1.0)
                 actor.GetProperty().SetDiffuse(0.0)
                 actor.GetProperty().SetRenderLinesAsTubes(True)

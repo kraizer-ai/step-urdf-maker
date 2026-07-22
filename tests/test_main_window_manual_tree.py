@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from unittest.mock import patch
 
 import numpy as np
@@ -7,7 +8,12 @@ from PySide6.QtWidgets import QApplication, QDialog, QDockWidget, QMessageBox
 
 from urdf_maker.model import JointSpec, LinkSpec, RobotProject, ScenePart
 from urdf_maker.ui.editors import NewLinkDialog
-from urdf_maker.ui.main_window import MainWindow, ROLE_ID, _stable_part_display_color
+from urdf_maker.ui.main_window import (
+    MainWindow,
+    ROLE_ID,
+    _geometry_principal_axes,
+    _stable_part_display_color,
+)
 
 
 def _app() -> QApplication:
@@ -38,6 +44,50 @@ def test_part_display_color_is_stable_for_the_same_part_id() -> None:
 
     assert first == second
     assert first != other
+
+
+def test_geometry_principal_axes_find_a_tilted_plane_normal() -> None:
+    angles = np.linspace(0.0, 2.0 * np.pi, 72, endpoint=False)
+    ring = np.column_stack((0.4 * np.cos(angles), 0.2 * np.sin(angles), np.zeros(72)))
+    tilt = math.radians(32.0)
+    rotation = np.asarray(
+        (
+            (1.0, 0.0, 0.0),
+            (0.0, math.cos(tilt), -math.sin(tilt)),
+            (0.0, math.sin(tilt), math.cos(tilt)),
+        )
+    )
+    axes = _geometry_principal_axes([ring @ rotation.T])
+
+    assert set(axes) == {"A", "B", "C"}
+    expected_normal = rotation @ np.asarray((0.0, 0.0, 1.0))
+    assert abs(float(np.dot(axes["C"], expected_normal))) > 0.999
+
+
+def test_add_child_requires_child_geometry_selection() -> None:
+    app = _app()
+    base = _part("base_part", 0.0)
+    project = RobotProject(
+        "selection_required",
+        parts=[base],
+        links=[LinkSpec("base_link", [base.id])],
+        root_link="base_link",
+    )
+    window = MainWindow()
+    try:
+        window._set_project(project, None)
+        window._set_selected_parts([])
+        with patch("urdf_maker.ui.main_window.NewLinkDialog") as dialog_class:
+            window.add_child_link_from_selection()
+        dialog_class.assert_not_called()
+        assert window.left_tabs.currentIndex() == 0
+        assert "자식 형상" in window.statusBar().currentMessage()
+    finally:
+        window._dirty = False
+        window.viewport._vtk_widget.Finalize()
+        window.close()
+        window.deleteLater()
+        app.processEvents()
 
 
 def test_maximize_keeps_one_attached_joint_inspector() -> None:
@@ -214,10 +264,37 @@ def test_new_child_preview_uses_selected_bundle_bbox_center_and_parent_context()
 
         expected_center = (handle.vertices_zero.min(axis=0) + handle.vertices_zero.max(axis=0)) * 0.5
         np.testing.assert_allclose(dialog._candidate_origin, expected_center)
-        assert set(window.viewport._candidate_axis_actors) == {"X", "Y", "Z"}
+        assert set(window.viewport._candidate_axis_actors) == {"A", "B", "C"}
         assert window.viewport._parts["base_part"].actor.GetVisibility()
         assert window.viewport._parts["handle_part"].actor.GetVisibility()
         assert window.viewport.selected_ids() == ["handle_part"]
+
+        dialog.type_combo.setCurrentText("revolute")
+        dialog.preview_slider.setValue(100)
+        window._preview_new_link_motion(dialog, "base_link", ["handle_part"])
+        actual = window.viewport._parts["handle_part"].actor.GetUserMatrix()
+        actual_matrix = np.asarray(
+            [
+                [actual.GetElement(row, column) for column in range(4)]
+                for row in range(4)
+            ]
+        )
+        origin_frame = np.eye(4)
+        origin_frame[:3, 3] = expected_center
+        expected_rotation = np.eye(4)
+        angle = math.pi / 4.0
+        expected_rotation[:3, :3] = np.asarray(
+            (
+                (math.cos(angle), -math.sin(angle), 0.0),
+                (math.sin(angle), math.cos(angle), 0.0),
+                (0.0, 0.0, 1.0),
+            )
+        )
+        np.testing.assert_allclose(
+            actual_matrix,
+            origin_frame @ expected_rotation @ np.linalg.inv(origin_frame),
+            atol=1.0e-6,
+        )
 
         assert window._create_moving_link(
             "handle_link",
@@ -253,6 +330,7 @@ def test_new_manual_tree_and_nested_children_follow_selected_parent() -> None:
         _part("base_extra_3", 0.09),
         _part("hand_part", 0.12),
         _part("finger_part", 0.2),
+        _part("right_hand_part", 0.28),
     ]
     project = RobotProject(
         "picker",
@@ -300,7 +378,7 @@ def test_new_manual_tree_and_nested_children_follow_selected_parent() -> None:
             for item in window._walk_part_tree()
             if item.data(0, ROLE_ID) is not None
         }
-        assert listed_ids == {"hand_part", "finger_part"}
+        assert listed_ids == {"hand_part", "finger_part", "right_hand_part"}
 
         window.hide_assigned_action.setChecked(False)
         assert not window.assigned_visibility_check.isChecked()
@@ -379,6 +457,7 @@ def test_new_manual_tree_and_nested_children_follow_selected_parent() -> None:
         camera.SetPosition(3.2, -2.1, 1.7)
         camera.SetFocalPoint(0.1, 0.05, 0.0)
         camera_before_dialog = window.viewport.capture_camera_state()
+        window._set_selected_parts(["right_hand_part"])
         with patch("urdf_maker.ui.main_window.NewLinkDialog") as dialog_class:
             dialog = dialog_class.return_value
             dialog.exec.return_value = QDialog.DialogCode.Accepted

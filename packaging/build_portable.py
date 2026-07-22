@@ -14,7 +14,7 @@ import zipfile
 
 ROOT = Path(__file__).resolve().parent.parent
 SPEC = ROOT / "packaging" / "step_urdf_maker.spec"
-VERSION = "0.1.5"
+VERSION = "0.1.6"
 
 
 def platform_slug() -> str:

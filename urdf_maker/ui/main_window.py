@@ -42,6 +42,7 @@ from ..model import (
     ProjectValidationError,
     RobotProject,
     apply_transform,
+    axis_angle_matrix,
     rpy_matrix,
     sanitize_name,
 )
@@ -68,6 +69,38 @@ def _stable_part_display_color(
     value = 0.82 + digest[3] / 255.0 * 0.12
     red, green, blue = colorsys.hsv_to_rgb(hue, saturation, value)
     return red, green, blue, max(0.0, min(1.0, float(alpha)))
+
+
+def _geometry_principal_axes(vertices: Iterable[np.ndarray]) -> dict[str, np.ndarray]:
+    """Return deterministic long/middle/thickness axes for selected geometry."""
+
+    arrays = [
+        np.asarray(value, dtype=float).reshape((-1, 3))
+        for value in vertices
+        if np.asarray(value).size
+    ]
+    if not arrays:
+        return {}
+    points = np.vstack(arrays)
+    points = points[np.all(np.isfinite(points), axis=1)]
+    if len(points) < 3:
+        return {}
+    centered = points - points.mean(axis=0)
+    covariance = centered.T @ centered / float(len(centered))
+    try:
+        _values, vectors = np.linalg.eigh(covariance)
+    except np.linalg.LinAlgError:
+        return {}
+    vectors = vectors[:, ::-1]
+    for index in range(3):
+        vector = vectors[:, index]
+        dominant = int(np.argmax(np.abs(vector)))
+        if vector[dominant] < 0.0:
+            vectors[:, index] *= -1.0
+    return {
+        name: vectors[:, index].copy()
+        for index, name in enumerate(("A", "B", "C"))
+    }
 
 
 class _WorkerSignals(QObject):
@@ -274,7 +307,10 @@ class MainWindow(QMainWindow):
         self.new_tree_button = QPushButton("전체 새로 시작")
         self.new_tree_button.setToolTip("기존 링크/관절을 지우고 새 Base 링크에서 시작합니다.")
         self.new_tree_button.clicked.connect(self.new_manual_tree)
-        self.add_child_button = QPushButton("+ 새 자식 링크")
+        self.add_child_button = QPushButton("+ 선택 형상으로 자식 링크")
+        self.add_child_button.setToolTip(
+            "먼저 움직일 형상을 선택한 뒤 부모 링크 위에서 관절 중심과 축을 설정합니다."
+        )
         self.add_child_button.clicked.connect(self.add_child_link_from_selection)
         tree_buttons.addWidget(self.new_tree_button)
         tree_buttons.addWidget(self.add_child_button, 1)
@@ -1287,6 +1323,13 @@ class MainWindow(QMainWindow):
         if self.project is None:
             return
         part_ids = self._selected_part_ids()
+        if not part_ids:
+            self.left_tabs.setCurrentIndex(0)
+            self.statusBar().showMessage(
+                "먼저 3D 또는 형상 목록에서 핸들처럼 움직일 자식 형상을 선택하세요.",
+                10000,
+            )
+            return
         parent = (
             self.current_link
             if self.current_link in self.project.links
@@ -1313,13 +1356,20 @@ class MainWindow(QMainWindow):
             self._preview_new_link_candidates(dialog, parent_name, part_ids)
 
         def preview_axis(axis: Iterable[float]) -> None:
-            vector = np.asarray(axis, dtype=float)
-            if vector.shape == (3,) and np.linalg.norm(vector) > 1.0e-12:
-                name = "XYZ"[int(np.argmax(np.abs(vector)))]
+            name = dialog.matching_candidate(axis)
+            if name is not None:
                 self.viewport.highlight_candidate_axis(name)
+
+        def preview_motion() -> None:
+            self._preview_new_link_motion(
+                dialog,
+                dialog.parent_combo.currentText(),
+                part_ids,
+            )
 
         dialog.parentPreviewRequested.connect(preview_parent)
         dialog.axisPreviewRequested.connect(preview_axis)
+        dialog.motionPreviewRequested.connect(preview_motion)
         accepted = False
         try:
             self._rebuild_viewport(part_ids, include_assigned=True)
@@ -1350,7 +1400,7 @@ class MainWindow(QMainWindow):
             joint_type=values["joint_type"],
             lower=values["lower"],
             upper=values["upper"],
-            allow_empty=True,
+            allow_empty=False,
         )
         if created:
             self.left_tabs.setCurrentIndex(1)
@@ -1361,7 +1411,7 @@ class MainWindow(QMainWindow):
         parent: str,
         child_part_ids: Iterable[str],
     ) -> None:
-        """Focus one parent link and show BBox-centered local axis candidates."""
+        """Focus parent and child while deriving axes from the child geometry."""
 
         if self.project is None or parent not in self.project.links:
             return
@@ -1376,66 +1426,141 @@ class MainWindow(QMainWindow):
             if part_id in self.project.parts
             and self.project.parts[part_id].visible
         ]
-        center_ids = selected_ids or context_ids
-        if not center_ids:
+        if not selected_ids:
+            return
+        try:
+            zero_fk = self.project.forward_kinematics(zero=True)
+            parent_zero = zero_fk[parent]
+            center_zero = self._parts_center(selected_ids)
+            center_parent = apply_transform(
+                center_zero.reshape(1, 3),
+                np.linalg.inv(parent_zero),
+            )[0]
+        except (KeyError, ValueError, np.linalg.LinAlgError):
+            return
+
+        child_vertices = [
+            self.project.parts[part_id].vertices_zero
+            for part_id in selected_ids
+            if len(self.project.parts[part_id].vertices_zero)
+        ]
+        world_candidates = _geometry_principal_axes(child_vertices)
+        try:
+            inverse_parent_rotation = np.linalg.inv(parent_zero[:3, :3])
+        except np.linalg.LinAlgError:
+            inverse_parent_rotation = parent_zero[:3, :3].T
+        local_candidates = {
+            name: inverse_parent_rotation @ direction
+            for name, direction in world_candidates.items()
+        }
+        if not local_candidates:
+            local_candidates = {
+                name: np.eye(3, dtype=float)[:, index]
+                for index, name in enumerate("XYZ")
+            }
+
+        dialog.set_candidate_origin(center_parent)
+        dialog.set_axis_candidates(local_candidates)
+        self.viewport.clear_candidate_axes(render=False)
+        self.viewport.set_isolated_parts([*context_ids, *selected_ids])
+        self.viewport.set_selected(selected_ids)
+        self._preview_new_link_motion(dialog, parent, selected_ids)
+        self.viewport.frame_all()
+        self.statusBar().showMessage(
+            "자식 형상의 A 장축 · B 중간축 · C 두께/노멀 축을 계산했습니다. "
+            "회전 관절을 고른 뒤 미리보기 슬라이더로 확인하세요."
+        )
+
+    def _new_link_axis_length(
+        self,
+        parent: str,
+        child_part_ids: Iterable[str],
+    ) -> float:
+        if self.project is None:
+            return 0.01
+        context_ids = [
+            part_id
+            for part_id in self.project.links[parent].part_ids
+            if part_id in self.project.parts and self.project.parts[part_id].visible
+        ]
+        visible_ids = list(dict.fromkeys([*context_ids, *child_part_ids]))
+        vertices = [
+            self.project.parts[part_id].vertices_zero
+            for part_id in visible_ids
+            if part_id in self.project.parts
+            if len(self.project.parts[part_id].vertices_zero)
+        ]
+        if vertices:
+            lower = np.min([value.min(axis=0) for value in vertices], axis=0)
+            upper = np.max([value.max(axis=0) for value in vertices], axis=0)
+            return max(float(np.linalg.norm(upper - lower)) * 0.28, 0.01)
+        return max(self._scene_scale * 0.15, 0.01)
+
+    def _preview_new_link_motion(
+        self,
+        dialog: NewLinkDialog,
+        parent: str,
+        child_part_ids: Iterable[str],
+    ) -> None:
+        """Preview a proposed joint without modifying the project."""
+
+        if self.project is None or parent not in self.project.links:
+            return
+        selected_ids = [
+            part_id
+            for part_id in child_part_ids
+            if part_id in self.project.parts and self.project.parts[part_id].visible
+        ]
+        if not selected_ids:
             return
         try:
             zero_fk = self.project.forward_kinematics(zero=True)
             current_fk = self.project.forward_kinematics()
             parent_zero = zero_fk[parent]
             parent_current = current_fk[parent]
-            center_zero = self._parts_center(center_ids)
-            center_parent = apply_transform(
-                center_zero.reshape(1, 3),
-                np.linalg.inv(parent_zero),
-            )[0]
+            origin_parent = dialog.origin_editor.value() / 1000.0
+            origin_frame = np.eye(4, dtype=float)
+            origin_frame[:3, 3] = origin_parent
+            motion = np.eye(4, dtype=float)
+            axis = np.asarray(dialog.axis_editor.value(), dtype=float)
+            axis_norm = float(np.linalg.norm(axis))
+            if axis_norm > 1.0e-12:
+                axis /= axis_norm
+            position = dialog.preview_position_si()
+            kind = dialog.type_combo.currentText()
+            if kind in {"revolute", "continuous"} and axis_norm > 1.0e-12:
+                motion = axis_angle_matrix(axis, position)
+            elif kind == "prismatic" and axis_norm > 1.0e-12:
+                motion[:3, 3] = axis * position
+            delta = (
+                parent_current
+                @ origin_frame
+                @ motion
+                @ np.linalg.inv(parent_zero @ origin_frame)
+            )
             center_current = apply_transform(
-                center_parent.reshape(1, 3),
+                origin_parent.reshape(1, 3),
                 parent_current,
             )[0]
         except (KeyError, ValueError, np.linalg.LinAlgError):
             return
 
-        vertices = [
-            self.project.parts[part_id].vertices_zero
-            for part_id in context_ids
-            if len(self.project.parts[part_id].vertices_zero)
-        ]
-        if vertices:
-            lower = np.min([value.min(axis=0) for value in vertices], axis=0)
-            upper = np.max([value.max(axis=0) for value in vertices], axis=0)
-            length = max(float(np.linalg.norm(upper - lower)) * 0.28, 0.01)
-        else:
-            length = max(self._scene_scale * 0.15, 0.01)
-
-        dialog.set_candidate_origin(center_parent)
-        local_axes = np.eye(3, dtype=float)
+        self.viewport.update_part_transforms(
+            {part_id: delta for part_id in selected_ids}
+        )
+        local_candidates = dialog.candidate_axes()
         directions = {
-            name: parent_current[:3, :3] @ local_axes[:, index]
-            for index, name in enumerate("XYZ")
+            name: parent_current[:3, :3] @ direction
+            for name, direction in local_candidates.items()
         }
-        try:
-            editor_axis = np.asarray(dialog.axis_editor.value(), dtype=float)
-        except (TypeError, ValueError):
-            editor_axis = np.asarray((1.0, 0.0, 0.0))
-        selected_name = (
-            "XYZ"[int(np.argmax(np.abs(editor_axis)))]
-            if editor_axis.shape == (3,)
-            else "X"
-        )
-        self.viewport.clear_candidate_axes(render=False)
-        self.viewport.set_isolated_parts([*context_ids, *selected_ids])
-        self.viewport.set_selected(selected_ids)
-        self.viewport.set_candidate_axes(
-            center_current,
-            directions,
-            length,
-            selected=selected_name,
-        )
-        self.viewport.frame_all()
-        self.statusBar().showMessage(
-            "부모 링크를 확대했습니다. 빨강 X · 초록 Y · 파랑 Z 후보축을 선택하세요."
-        )
+        if directions:
+            selected_name = dialog.matching_candidate(axis) or next(iter(directions))
+            self.viewport.set_candidate_axes(
+                center_current,
+                directions,
+                self._new_link_axis_length(parent, selected_ids),
+                selected=selected_name,
+            )
 
     def _create_moving_link(
         self,
