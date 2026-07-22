@@ -123,6 +123,143 @@ class ProjectKinematicsTests(unittest.TestCase):
         self.assertEqual(project.nudge_joint("j", 1.0), 0.3)
         self.assertEqual(project.nudge_joint("j", -2.0), -0.2)
 
+    def test_mimic_maps_driver_state_to_left_and_right_axles(self):
+        project = RobotProject(
+            "steering",
+            links=[
+                LinkSpec("base"),
+                LinkSpec("handle"),
+                LinkSpec("left_axle"),
+                LinkSpec("left_wheel"),
+                LinkSpec("right_axle"),
+                LinkSpec("right_wheel"),
+            ],
+            joints=[
+                JointSpec(
+                    "handle_joint",
+                    "revolute",
+                    "base",
+                    "handle",
+                    lower=-math.pi,
+                    upper=math.pi,
+                ),
+                JointSpec(
+                    "left_axle_joint",
+                    "prismatic",
+                    "base",
+                    "left_axle",
+                    lower=-0.05,
+                    upper=0.05,
+                    mimic_joint="handle_joint",
+                    mimic_auto=True,
+                ),
+                JointSpec(
+                    "left_wheel_mount",
+                    "fixed",
+                    "left_axle",
+                    "left_wheel",
+                ),
+                JointSpec(
+                    "right_axle_joint",
+                    "prismatic",
+                    "base",
+                    "right_axle",
+                    lower=-0.05,
+                    upper=0.05,
+                    mimic_joint="handle_joint",
+                    mimic_auto=True,
+                    mimic_reverse=True,
+                ),
+                JointSpec(
+                    "right_wheel_mount",
+                    "fixed",
+                    "right_axle",
+                    "right_wheel",
+                ),
+            ],
+            root_link="base",
+        )
+
+        multiplier, offset = project.mimic_parameters("left_axle_joint")
+        self.assertAlmostEqual(multiplier, 0.05 / math.pi)
+        self.assertAlmostEqual(offset, 0.0)
+        project.set_joint_position("handle_joint", math.pi / 2.0)
+        self.assertAlmostEqual(project.joint("left_axle_joint").position, 0.025)
+        self.assertAlmostEqual(project.joint("right_axle_joint").position, -0.025)
+
+        fk = project.forward_kinematics()
+        np.testing.assert_allclose(fk["left_axle"][:3, 3], (0.025, 0.0, 0.0))
+        np.testing.assert_allclose(fk["left_wheel"][:3, 3], (0.025, 0.0, 0.0))
+        np.testing.assert_allclose(fk["right_axle"][:3, 3], (-0.025, 0.0, 0.0))
+        np.testing.assert_allclose(fk["right_wheel"][:3, 3], (-0.025, 0.0, 0.0))
+        self.assertEqual(project.validate(), [])
+
+    def test_validation_rejects_mimic_cycles(self):
+        project = RobotProject(
+            "cycle",
+            links=[LinkSpec("base"), LinkSpec("one"), LinkSpec("two")],
+            joints=[
+                JointSpec(
+                    "one_joint",
+                    "prismatic",
+                    "base",
+                    "one",
+                    mimic_joint="two_joint",
+                ),
+                JointSpec(
+                    "two_joint",
+                    "prismatic",
+                    "base",
+                    "two",
+                    mimic_joint="one_joint",
+                ),
+            ],
+            root_link="base",
+        )
+        self.assertIn("Mimic joint dependency contains a cycle", "\n".join(project.validate()))
+        with self.assertRaises(ProjectValidationError):
+            project.forward_kinematics()
+
+    def test_direction_lever_position_controls_continuous_wheel_velocity(self):
+        project = RobotProject(
+            "drive",
+            links=[LinkSpec("base"), LinkSpec("lever"), LinkSpec("wheel")],
+            joints=[
+                JointSpec(
+                    "direction_lever",
+                    "revolute",
+                    "base",
+                    "lever",
+                    lower=-0.4,
+                    upper=0.4,
+                ),
+                JointSpec(
+                    "wheel_joint",
+                    "continuous",
+                    "base",
+                    "wheel",
+                    drive_source_joint="direction_lever",
+                    drive_max_velocity=12.0,
+                    drive_deadband=0.1,
+                ),
+            ],
+            root_link="base",
+        )
+
+        self.assertEqual(project.validate(), [])
+        project.set_joint_position("direction_lever", -0.4)
+        self.assertAlmostEqual(project.drive_fraction("wheel_joint"), -1.0)
+        self.assertAlmostEqual(project.drive_velocity("wheel_joint"), -12.0)
+        project.set_joint_position("direction_lever", 0.0)
+        self.assertEqual(project.drive_velocity("wheel_joint"), 0.0)
+        project.set_joint_position("direction_lever", 0.22)
+        self.assertAlmostEqual(project.drive_fraction("wheel_joint"), 0.5)
+        project.set_joint_position("direction_lever", 0.4)
+        self.assertAlmostEqual(project.drive_velocity("wheel_joint"), 12.0)
+
+        project.joint("wheel_joint").drive_reverse = True
+        self.assertAlmostEqual(project.drive_velocity("wheel_joint"), -12.0)
+
 
 class ProjectEditingTests(unittest.TestCase):
     def test_create_link_with_unknown_part_is_atomic(self):

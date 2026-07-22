@@ -35,7 +35,15 @@ try:
         QTimer,
         Signal,
     )
-    from PySide6.QtWidgets import QApplication, QLabel, QPushButton, QVBoxLayout, QWidget
+    from PySide6.QtWidgets import (
+        QApplication,
+        QHBoxLayout,
+        QLabel,
+        QPushButton,
+        QSlider,
+        QVBoxLayout,
+        QWidget,
+    )
 
     # Importing these modules also registers the OpenGL render-window and the
     # default interaction style with VTK's object factory.
@@ -52,14 +60,19 @@ try:
     from vtkmodules.vtkCommonCore import vtkCommand, vtkPoints
     from vtkmodules.vtkCommonDataModel import vtkCellArray, vtkPolyData
     from vtkmodules.vtkCommonMath import vtkMatrix4x4
-    from vtkmodules.vtkFiltersCore import vtkPolyDataNormals
+    from vtkmodules.vtkFiltersCore import vtkPolyDataNormals, vtkTubeFilter
     from vtkmodules.vtkFiltersHybrid import vtkPolyDataSilhouette
-    from vtkmodules.vtkFiltersSources import vtkArrowSource, vtkLineSource
+    from vtkmodules.vtkFiltersSources import vtkArrowSource, vtkLineSource, vtkSphereSource
     from vtkmodules.vtkInteractionStyle import vtkInteractorStyleTrackballCamera
-    from vtkmodules.vtkInteractionWidgets import vtkOrientationMarkerWidget
+    from vtkmodules.vtkInteractionWidgets import (
+        vtkLineRepresentation,
+        vtkLineWidget2,
+        vtkOrientationMarkerWidget,
+    )
     from vtkmodules.vtkRenderingAnnotation import vtkAxesActor
     from vtkmodules.vtkRenderingCore import (
         vtkActor,
+        vtkBillboardTextActor3D,
         vtkCellPicker,
         vtkPolyDataMapper,
         vtkRenderer,
@@ -92,6 +105,11 @@ if _IMPORT_ERROR is not None:
         """Dependency-error placeholder which keeps this module importable."""
 
         partsSelectionChanged = None
+        candidateAxisPicked = None
+        axisHandlesChanged = None
+        animationToggled = None
+        controlAnimationToggled = None
+        operatorControlChanged = None
 
         @staticmethod
         def dependency_error() -> str:
@@ -241,6 +259,13 @@ else:
         return actor.GetAddressAsString("")
 
 
+    class _NoWheelSlider(QSlider):
+        """Keep viewport control values stable while the user zooms."""
+
+        def wheelEvent(self, event: Any) -> None:  # noqa: N802 - Qt API
+            event.ignore()
+
+
     class ViewportWidget(QWidget):  # type: ignore[no-redef]
         """A reusable STEP/URDF mesh viewport with click selection.
 
@@ -251,7 +276,11 @@ else:
         """
 
         partsSelectionChanged = Signal(list)
+        candidateAxisPicked = Signal(str)
+        axisHandlesChanged = Signal(object, object)
         animationToggled = Signal(bool)
+        controlAnimationToggled = Signal(bool)
+        operatorControlChanged = Signal(str, float)
 
         def __init__(self, parent: QWidget | None = None) -> None:
             super().__init__(parent)
@@ -338,11 +367,11 @@ else:
             self._shortcut_label.adjustSize()
             self._position_shortcut_label()
             self._shortcut_label.raise_()
-            self._play_button = QPushButton("▶ Play", self._vtk_widget)
+            self._play_button = QPushButton("▶ 자동", self._vtk_widget)
             self._play_button.setObjectName("viewportPlayButton")
             self._play_button.setCheckable(True)
             self._play_button.setToolTip(
-                "카메라를 천천히 회전하고 모든 가동 관절을 한계 사이에서 왕복합니다."
+                "일반 가동 관절을 한계 사이에서 자동으로 왕복합니다."
             )
             self._play_button.setStyleSheet(
                 "QPushButton#viewportPlayButton {"
@@ -364,6 +393,66 @@ else:
             self._play_button.adjustSize()
             self._position_play_button()
             self._play_button.raise_()
+            self._control_play_button = QPushButton("🎮 조작", self._vtk_widget)
+            self._control_play_button.setObjectName("viewportControlPlayButton")
+            self._control_play_button.setCheckable(True)
+            self._control_play_button.setToolTip(
+                "설정 패널을 숨기고 핸들·주행 레버 등 실제 구동원만 조작합니다."
+            )
+            self._control_play_button.setStyleSheet(
+                "QPushButton#viewportControlPlayButton {"
+                " color: #f5f7fa;"
+                " background: rgba(34, 72, 58, 225);"
+                " border: 1px solid rgba(180, 226, 205, 130);"
+                " border-radius: 5px;"
+                " padding: 4px 10px;"
+                " font-weight: 600;"
+                "}"
+                "QPushButton#viewportControlPlayButton:hover {"
+                " background: rgba(45, 96, 76, 240);"
+                "}"
+                "QPushButton#viewportControlPlayButton:checked {"
+                " background: rgba(156, 48, 38, 235);"
+                "}"
+            )
+            self._control_play_button.toggled.connect(self._control_play_toggled)
+            self._control_play_button.adjustSize()
+
+            self._operator_panel = QWidget(self._vtk_widget)
+            self._operator_panel.setObjectName("viewportOperatorPanel")
+            self._operator_panel.setStyleSheet(
+                "QWidget#viewportOperatorPanel {"
+                " color: #f3f6f8;"
+                " background: rgba(22, 29, 38, 225);"
+                " border: 1px solid rgba(206, 220, 230, 125);"
+                " border-radius: 7px;"
+                "}"
+                "QLabel { color: #f3f6f8; background: transparent; border: none; }"
+                "QSlider::groove:horizontal {"
+                " height: 6px; background: rgba(110, 128, 144, 170); border-radius: 3px;"
+                "}"
+                "QSlider::handle:horizontal {"
+                " width: 16px; margin: -5px 0; background: #66d2ad;"
+                " border: 1px solid #d9fff1; border-radius: 8px;"
+                "}"
+            )
+            operator_layout = QVBoxLayout(self._operator_panel)
+            operator_layout.setContentsMargins(12, 10, 12, 10)
+            operator_layout.setSpacing(7)
+            operator_title = QLabel("조작 Play · 입력 패널")
+            operator_title.setStyleSheet("font-weight: 700; font-size: 13px;")
+            operator_layout.addWidget(operator_title)
+            self._operator_hint = QLabel("핸들과 주행 레버를 직접 조작하세요.")
+            self._operator_hint.setStyleSheet("color: #b9c6cf; font-size: 11px;")
+            operator_layout.addWidget(self._operator_hint)
+            self._operator_rows_layout = QVBoxLayout()
+            self._operator_rows_layout.setSpacing(8)
+            operator_layout.addLayout(self._operator_rows_layout)
+            self._operator_controls: dict[str, dict[str, Any]] = {}
+            self._operator_panel.hide()
+            self._position_play_button()
+            self._position_operator_panel()
+            self._control_play_button.raise_()
             self._fps_timer = QTimer(self)
             self._fps_timer.setInterval(500)
             self._fps_timer.timeout.connect(self._refresh_fps_label)
@@ -376,6 +465,7 @@ else:
 
             self._parts: dict[str, _PartActor] = {}
             self._actor_to_part: dict[str, str] = {}
+            self._actor_to_candidate_axis: dict[str, str] = {}
             self._color_overrides: dict[str, tuple[float, float, float, float]] = {}
             self._selected: list[str] = []
             self._mouse_press_position: QPointF | None = None
@@ -387,6 +477,10 @@ else:
             self._axis_source: vtkArrowSource | vtkLineSource | None = None
             self._axis_bidirectional = False
             self._candidate_axis_actors: dict[str, vtkActor] = {}
+            self._candidate_aux_actors: list[Any] = []
+            self._axis_line_widget: vtkLineWidget2 | None = None
+            self._axis_line_representation: vtkLineRepresentation | None = None
+            self._axis_handle_interacting = False
 
             # Give both the main renderer and the orientation marker a valid
             # non-polar camera from their first render. Setting Z-up while the
@@ -746,11 +840,15 @@ else:
                     self._axis_source = line
                 else:
                     arrow = vtkArrowSource()
-                    arrow.SetShaftResolution(24)
-                    arrow.SetTipResolution(32)
-                    arrow.SetShaftRadius(0.022)
-                    arrow.SetTipRadius(0.070)
-                    arrow.SetTipLength(0.28)
+                    arrow.SetShaftResolution(18)
+                    arrow.SetTipResolution(24)
+                    # This marker is an annotation, not a manipulator.  Keep
+                    # it slim enough that it does not cover the selected link
+                    # or nearby assembly details when the full model is in
+                    # view.
+                    arrow.SetShaftRadius(0.010)
+                    arrow.SetTipRadius(0.035)
+                    arrow.SetTipLength(0.18)
                     self._axis_source = arrow
 
                 mapper = vtkPolyDataMapper()
@@ -783,6 +881,103 @@ else:
                 self._renderer.ResetCameraClippingRange()
                 self._render()
 
+        def set_axis_edit_handles(
+            self,
+            origin: Any,
+            direction: Any,
+            length: float,
+        ) -> None:
+            """Show a draggable line whose midpoint and direction define an axis."""
+
+            if self._axis_handle_interacting:
+                return
+            center = np.asarray(origin, dtype=np.float64).reshape(-1)
+            vector = np.asarray(direction, dtype=np.float64).reshape(-1)
+            axis_length = float(length)
+            magnitude = float(np.linalg.norm(vector))
+            if (
+                center.shape != (3,)
+                or vector.shape != (3,)
+                or not np.all(np.isfinite(center))
+                or not np.all(np.isfinite(vector))
+                or magnitude <= 1.0e-12
+                or not math.isfinite(axis_length)
+                or axis_length <= 0.0
+            ):
+                return
+            vector /= magnitude
+
+            if self._axis_line_widget is None:
+                representation = vtkLineRepresentation()
+                representation.SetHandleSize(8.0)
+                representation.GetLineProperty().SetColor(1.0, 0.76, 0.08)
+                representation.GetLineProperty().SetLineWidth(4.0)
+                representation.GetSelectedLineProperty().SetColor(1.0, 0.42, 0.04)
+                representation.GetSelectedLineProperty().SetLineWidth(6.0)
+                representation.GetEndPointProperty().SetColor(1.0, 0.90, 0.18)
+                representation.GetEndPoint2Property().SetColor(1.0, 0.90, 0.18)
+                representation.GetSelectedEndPointProperty().SetColor(1.0, 0.35, 0.05)
+                representation.GetSelectedEndPoint2Property().SetColor(1.0, 0.35, 0.05)
+                widget = vtkLineWidget2()
+                widget.SetInteractor(self._interactor)
+                widget.SetRepresentation(representation)
+                widget.AddObserver(
+                    vtkCommand.InteractionEvent,
+                    self._axis_edit_handles_interacted,
+                )
+                self._axis_line_representation = representation
+                self._axis_line_widget = widget
+
+            representation = self._axis_line_representation
+            if representation is None or self._axis_line_widget is None:
+                return
+            half_length = axis_length * 0.58
+            representation.SetPoint1WorldPosition(
+                tuple(center - vector * half_length)
+            )
+            representation.SetPoint2WorldPosition(
+                tuple(center + vector * half_length)
+            )
+            representation.BuildRepresentation()
+            self._axis_line_widget.On()
+            self._render()
+
+        def _axis_edit_handles_interacted(self, _caller: Any, _event: Any) -> None:
+            representation = self._axis_line_representation
+            if representation is None:
+                return
+            first = np.asarray(
+                representation.GetPoint1WorldPosition(),
+                dtype=np.float64,
+            )
+            second = np.asarray(
+                representation.GetPoint2WorldPosition(),
+                dtype=np.float64,
+            )
+            direction = second - first
+            magnitude = float(np.linalg.norm(direction))
+            if magnitude <= 1.0e-12:
+                return
+            self._axis_handle_interacting = True
+            try:
+                self.axisHandlesChanged.emit(
+                    (first + second) * 0.5,
+                    direction / magnitude,
+                )
+            finally:
+                self._axis_handle_interacting = False
+
+        def clear_axis_edit_handles(self, *, render: bool = True) -> None:
+            if self._axis_line_widget is None:
+                return
+            self._axis_line_widget.Off()
+            self._axis_line_widget.SetInteractor(None)
+            self._axis_line_widget = None
+            self._axis_line_representation = None
+            self._axis_handle_interacting = False
+            if render:
+                self._render()
+
         def set_candidate_axes(
             self,
             origin: Any,
@@ -790,8 +985,11 @@ else:
             length: float,
             *,
             selected: str = "X",
+            selected_direction: Any | None = None,
+            rotational: bool = False,
+            candidate_origins: Mapping[str, Any] | None = None,
         ) -> None:
-            """Show named joint-axis candidates through one center."""
+            """Show labeled axis candidates, their center and positive direction."""
 
             center = np.asarray(origin, dtype=np.float64).reshape(-1)
             if center.shape != (3,) or not np.all(np.isfinite(center)):
@@ -820,9 +1018,19 @@ else:
                 if magnitude < 1.0e-12:
                     continue
                 direction /= magnitude
+                axis_center = center
+                if candidate_origins is not None and raw_name in candidate_origins:
+                    raw_axis_center = np.asarray(
+                        candidate_origins[raw_name],
+                        dtype=np.float64,
+                    ).reshape(-1)
+                    if raw_axis_center.shape == (3,) and np.all(
+                        np.isfinite(raw_axis_center)
+                    ):
+                        axis_center = raw_axis_center
                 line = vtkLineSource()
-                line.SetPoint1(*(center - direction * axis_length))
-                line.SetPoint2(*(center + direction * axis_length))
+                line.SetPoint1(*(axis_center - direction * axis_length))
+                line.SetPoint2(*(axis_center + direction * axis_length))
                 mapper = vtkPolyDataMapper()
                 mapper.SetInputConnection(line.GetOutputPort())
                 actor = vtkActor()
@@ -834,6 +1042,206 @@ else:
                 actor.GetProperty().SetRenderLinesAsTubes(True)
                 self._selection_renderer.AddActor(actor)
                 self._candidate_axis_actors[name] = actor
+                self._actor_to_candidate_axis[_actor_key(actor) or ""] = name
+                self._picker.AddPickList(actor)
+
+                label = vtkBillboardTextActor3D()
+                label.SetInput(name)
+                label.SetPosition(
+                    *(axis_center + direction * axis_length * 0.55)
+                )
+                label.SetPickable(False)
+                label.GetTextProperty().SetColor(
+                    *palette[color_index % len(palette)]
+                )
+                label.GetTextProperty().SetFontSize(18)
+                label.GetTextProperty().SetBold(True)
+                label.GetTextProperty().SetBackgroundColor(0.05, 0.06, 0.08)
+                label.GetTextProperty().SetBackgroundOpacity(0.72)
+                self._selection_renderer.AddActor(label)
+                self._candidate_aux_actors.append(label)
+
+            center_source = vtkSphereSource()
+            center_source.SetCenter(*center)
+            center_source.SetRadius(axis_length * 0.045)
+            center_source.SetThetaResolution(20)
+            center_source.SetPhiResolution(14)
+            center_mapper = vtkPolyDataMapper()
+            center_mapper.SetInputConnection(center_source.GetOutputPort())
+            center_actor = vtkActor()
+            center_actor.SetMapper(center_mapper)
+            center_actor.SetPickable(False)
+            center_actor.GetProperty().SetColor(1.0, 0.78, 0.16)
+            center_actor.GetProperty().SetAmbient(1.0)
+            center_actor.GetProperty().SetDiffuse(0.0)
+            self._selection_renderer.AddActor(center_actor)
+            self._candidate_aux_actors.append(center_actor)
+
+            center_label = vtkBillboardTextActor3D()
+            center_label.SetInput("PIVOT")
+            center_label.SetPosition(
+                *(
+                    center
+                    + np.asarray(
+                        (
+                            axis_length * 0.07,
+                            axis_length * 0.07,
+                            axis_length * 0.07,
+                        )
+                    )
+                )
+            )
+            center_label.SetPickable(False)
+            center_label.GetTextProperty().SetColor(1.0, 0.82, 0.22)
+            center_label.GetTextProperty().SetFontSize(15)
+            center_label.GetTextProperty().SetBold(True)
+            center_label.GetTextProperty().SetBackgroundColor(0.05, 0.06, 0.08)
+            center_label.GetTextProperty().SetBackgroundOpacity(0.72)
+            self._selection_renderer.AddActor(center_label)
+            self._candidate_aux_actors.append(center_label)
+
+            positive = None
+            if selected_direction is not None:
+                positive = np.asarray(selected_direction, dtype=np.float64).reshape(-1)
+                if (
+                    positive.shape != (3,)
+                    or not np.all(np.isfinite(positive))
+                    or np.linalg.norm(positive) < 1.0e-12
+                ):
+                    positive = None
+            if positive is not None:
+                positive /= np.linalg.norm(positive)
+                actual_line = vtkLineSource()
+                actual_line.SetPoint1(*(center - positive * axis_length * 0.92))
+                actual_line.SetPoint2(*(center + positive * axis_length * 0.92))
+                actual_mapper = vtkPolyDataMapper()
+                actual_mapper.SetInputConnection(actual_line.GetOutputPort())
+                actual_actor = vtkActor()
+                actual_actor.SetMapper(actual_mapper)
+                actual_actor.SetPickable(False)
+                actual_actor.GetProperty().SetColor(1.0, 0.62, 0.08)
+                actual_actor.GetProperty().SetAmbient(1.0)
+                actual_actor.GetProperty().SetDiffuse(0.0)
+                actual_actor.GetProperty().SetLineWidth(6.0)
+                actual_actor.GetProperty().SetRenderLinesAsTubes(True)
+                self._selection_renderer.AddActor(actual_actor)
+                self._candidate_aux_actors.append(actual_actor)
+
+                actual_label = vtkBillboardTextActor3D()
+                actual_label.SetInput("AXIS")
+                actual_label.SetPosition(
+                    *(center + positive * axis_length * 0.66)
+                )
+                actual_label.SetPickable(False)
+                actual_label.GetTextProperty().SetColor(1.0, 0.65, 0.10)
+                actual_label.GetTextProperty().SetFontSize(15)
+                actual_label.GetTextProperty().SetBold(True)
+                actual_label.GetTextProperty().SetBackgroundColor(0.05, 0.06, 0.08)
+                actual_label.GetTextProperty().SetBackgroundOpacity(0.72)
+                self._selection_renderer.AddActor(actual_label)
+                self._candidate_aux_actors.append(actual_label)
+
+                helper = np.asarray((0.0, 0.0, 1.0), dtype=np.float64)
+                if abs(float(np.dot(positive, helper))) > 0.92:
+                    helper = np.asarray((0.0, 1.0, 0.0), dtype=np.float64)
+                basis_y = np.cross(helper, positive)
+                basis_y /= np.linalg.norm(basis_y)
+                basis_z = np.cross(positive, basis_y)
+
+                indicator_direction = positive
+                indicator_origin = center
+                indicator_length = axis_length * 0.82
+                if rotational:
+                    radius = axis_length * 0.34
+                    angles = np.linspace(
+                        math.radians(18.0),
+                        math.radians(305.0),
+                        56,
+                    )
+                    arc_points = vtkPoints()
+                    arc_positions: list[np.ndarray] = []
+                    for angle in angles:
+                        position = center + radius * (
+                            math.cos(float(angle)) * basis_y
+                            + math.sin(float(angle)) * basis_z
+                        )
+                        arc_positions.append(position)
+                        arc_points.InsertNextPoint(*position)
+                    arc_lines = vtkCellArray()
+                    arc_lines.InsertNextCell(len(arc_positions))
+                    for point_index in range(len(arc_positions)):
+                        arc_lines.InsertCellPoint(point_index)
+                    arc_data = vtkPolyData()
+                    arc_data.SetPoints(arc_points)
+                    arc_data.SetLines(arc_lines)
+                    arc_tube = vtkTubeFilter()
+                    arc_tube.SetInputData(arc_data)
+                    arc_tube.SetRadius(axis_length * 0.014)
+                    arc_tube.SetNumberOfSides(14)
+                    arc_mapper = vtkPolyDataMapper()
+                    arc_mapper.SetInputConnection(arc_tube.GetOutputPort())
+                    arc_actor = vtkActor()
+                    arc_actor.SetMapper(arc_mapper)
+                    arc_actor.SetPickable(False)
+                    arc_actor.GetProperty().SetColor(1.0, 0.56, 0.08)
+                    arc_actor.GetProperty().SetAmbient(0.85)
+                    arc_actor.GetProperty().SetDiffuse(0.15)
+                    self._selection_renderer.AddActor(arc_actor)
+                    self._candidate_aux_actors.append(arc_actor)
+
+                    end_angle = float(angles[-1])
+                    indicator_direction = (
+                        -math.sin(end_angle) * basis_y
+                        + math.cos(end_angle) * basis_z
+                    )
+                    indicator_direction /= np.linalg.norm(indicator_direction)
+                    indicator_length = radius * 0.48
+                    indicator_origin = (
+                        arc_positions[-1]
+                        - indicator_direction * indicator_length * 0.45
+                    )
+
+                    rotation_label = vtkBillboardTextActor3D()
+                    rotation_label.SetInput("ROTATE")
+                    rotation_label.SetPosition(*(center + basis_y * radius * 1.25))
+                    rotation_label.SetPickable(False)
+                    rotation_label.GetTextProperty().SetColor(1.0, 0.62, 0.12)
+                    rotation_label.GetTextProperty().SetFontSize(15)
+                    rotation_label.GetTextProperty().SetBold(True)
+                    rotation_label.GetTextProperty().SetBackgroundColor(0.05, 0.06, 0.08)
+                    rotation_label.GetTextProperty().SetBackgroundOpacity(0.72)
+                    self._selection_renderer.AddActor(rotation_label)
+                    self._candidate_aux_actors.append(rotation_label)
+
+                arrow_helper = np.asarray((0.0, 0.0, 1.0), dtype=np.float64)
+                if abs(float(np.dot(indicator_direction, arrow_helper))) > 0.92:
+                    arrow_helper = np.asarray((0.0, 1.0, 0.0), dtype=np.float64)
+                arrow_y = np.cross(arrow_helper, indicator_direction)
+                arrow_y /= np.linalg.norm(arrow_y)
+                arrow_z = np.cross(indicator_direction, arrow_y)
+                transform = np.eye(4, dtype=np.float64)
+                transform[:3, 0] = indicator_direction * indicator_length
+                transform[:3, 1] = arrow_y * indicator_length
+                transform[:3, 2] = arrow_z * indicator_length
+                transform[:3, 3] = indicator_origin
+
+                arrow_source = vtkArrowSource()
+                arrow_source.SetShaftRadius(0.025)
+                arrow_source.SetTipRadius(0.075)
+                arrow_source.SetTipLength(0.25)
+                arrow_source.SetShaftResolution(20)
+                arrow_source.SetTipResolution(24)
+                arrow_mapper = vtkPolyDataMapper()
+                arrow_mapper.SetInputConnection(arrow_source.GetOutputPort())
+                arrow_actor = vtkActor()
+                arrow_actor.SetMapper(arrow_mapper)
+                arrow_actor.SetPickable(False)
+                arrow_actor.SetUserMatrix(_vtk_matrix(transform))
+                arrow_actor.GetProperty().SetColor(1.0, 0.56, 0.08)
+                arrow_actor.GetProperty().SetAmbient(0.8)
+                arrow_actor.GetProperty().SetDiffuse(0.2)
+                self._selection_renderer.AddActor(arrow_actor)
+                self._candidate_aux_actors.append(arrow_actor)
 
             self.highlight_candidate_axis(selected, render=False)
             self._render()
@@ -844,25 +1252,31 @@ else:
             selected = str(axis).upper().lstrip("+-")
             for name, actor in self._candidate_axis_actors.items():
                 is_selected = name == selected
-                actor.GetProperty().SetLineWidth(8.0 if is_selected else 4.0)
-                actor.GetProperty().SetOpacity(1.0 if is_selected else 0.72)
+                actor.GetProperty().SetLineWidth(8.0 if is_selected else 2.5)
+                actor.GetProperty().SetOpacity(1.0 if is_selected else 0.38)
             if render:
                 self._render()
 
         def clear_candidate_axes(self, *, render: bool = True) -> None:
             """Remove temporary child-link axis candidates."""
 
-            if not self._candidate_axis_actors:
+            if not self._candidate_axis_actors and not self._candidate_aux_actors:
                 return
             for actor in self._candidate_axis_actors.values():
                 self._selection_renderer.RemoveActor(actor)
+                self._picker.DeletePickList(actor)
+                self._actor_to_candidate_axis.pop(_actor_key(actor) or "", None)
             self._candidate_axis_actors.clear()
+            for actor in self._candidate_aux_actors:
+                self._selection_renderer.RemoveActor(actor)
+            self._candidate_aux_actors.clear()
             if render:
                 self._render()
 
         def clear(self) -> None:
             """Remove all model actors, selection, and the joint-axis marker."""
 
+            self.clear_axis_edit_handles(render=False)
             self.clear_candidate_axes(render=False)
             had_selection = bool(self._selected)
             self._remove_parts()
@@ -887,6 +1301,7 @@ else:
                     self._position_fps_label()
                     self._position_shortcut_label()
                     self._position_play_button()
+                    self._position_operator_panel()
                     self._queue_resize_render()
                 elif event_type == QEvent.Type.Show:
                     self._queue_resize_render()
@@ -1093,6 +1508,13 @@ else:
             x = int(round(float(position.x()) * scale_x))
             y = int(round((widget_height - 1.0 - float(position.y())) * scale_y))
 
+            picked = bool(self._picker.Pick(x, y, 0.0, self._selection_renderer))
+            actor = self._picker.GetActor() if picked else None
+            candidate_axis = self._actor_to_candidate_axis.get(_actor_key(actor) or "")
+            if candidate_axis is not None:
+                self.candidateAxisPicked.emit(candidate_axis)
+                return
+
             picked = bool(self._picker.Pick(x, y, 0.0, self._renderer))
             actor = self._picker.GetActor() if picked else None
             part_id = self._actor_to_part.get(_actor_key(actor) or "")
@@ -1152,7 +1574,14 @@ else:
         def _position_shortcut_label(self) -> None:
             self._shortcut_label.adjustSize()
             play_width = self._play_button.width() if hasattr(self, "_play_button") else 0
-            available_width = max(1, self._vtk_widget.width() - play_width - 24)
+            control_width = (
+                self._control_play_button.width()
+                if hasattr(self, "_control_play_button")
+                else 0
+            )
+            available_width = max(
+                1, self._vtk_widget.width() - play_width - control_width - 32
+            )
             x = max(
                 8,
                 (available_width - self._shortcut_label.width()) // 2,
@@ -1165,14 +1594,43 @@ else:
             x = max(8, self._vtk_widget.width() - self._play_button.width() - 10)
             y = max(8, self._vtk_widget.height() - self._play_button.height() - 8)
             self._play_button.move(x, y)
+            if hasattr(self, "_control_play_button"):
+                self._control_play_button.adjustSize()
+                control_x = max(
+                    8, x - self._control_play_button.width() - 7
+                )
+                self._control_play_button.move(control_x, y)
+
+        def _position_operator_panel(self) -> None:
+            if not hasattr(self, "_operator_panel"):
+                return
+            panel_width = min(380, max(280, self._vtk_widget.width() // 3))
+            self._operator_panel.setFixedWidth(panel_width)
+            self._operator_panel.adjustSize()
+            x = 12
+            y = max(
+                46,
+                (self._vtk_widget.height() - self._operator_panel.height()) // 2,
+            )
+            self._operator_panel.move(x, y)
 
         def _play_toggled(self, playing: bool) -> None:
-            self._play_button.setText("■ Stop" if playing else "▶ Play")
+            self._play_button.setText("■ 자동 정지" if playing else "▶ 자동")
             self._play_button.adjustSize()
             self._position_play_button()
             self._position_shortcut_label()
             self._play_button.raise_()
             self.animationToggled.emit(bool(playing))
+
+        def _control_play_toggled(self, playing: bool) -> None:
+            self._control_play_button.setText(
+                "■ 조작 정지" if playing else "🎮 조작"
+            )
+            self._control_play_button.adjustSize()
+            self._position_play_button()
+            self._position_shortcut_label()
+            self._control_play_button.raise_()
+            self.controlAnimationToggled.emit(bool(playing))
 
         def set_animation_playing(self, playing: bool) -> None:
             """Synchronize the overlay button without emitting a new request."""
@@ -1180,10 +1638,135 @@ else:
             self._play_button.blockSignals(True)
             self._play_button.setChecked(bool(playing))
             self._play_button.blockSignals(False)
-            self._play_button.setText("■ Stop" if playing else "▶ Play")
+            self._play_button.setText("■ 자동 정지" if playing else "▶ 자동")
             self._play_button.adjustSize()
             self._position_play_button()
             self._position_shortcut_label()
+
+        def set_control_animation_playing(self, playing: bool) -> None:
+            """Synchronize control mode and its overlay without emitting."""
+
+            self._control_play_button.blockSignals(True)
+            self._control_play_button.setChecked(bool(playing))
+            self._control_play_button.blockSignals(False)
+            self._control_play_button.setText(
+                "■ 조작 정지" if playing else "🎮 조작"
+            )
+            self._control_play_button.adjustSize()
+            self._operator_panel.setVisible(bool(playing))
+            self._position_play_button()
+            self._position_shortcut_label()
+            self._position_operator_panel()
+            self._control_play_button.raise_()
+            if playing:
+                self._operator_panel.raise_()
+
+        def set_operator_controls(
+            self, controls: Iterable[Mapping[str, Any]]
+        ) -> None:
+            """Replace the compact controls shown during operator Play."""
+
+            while self._operator_rows_layout.count():
+                item = self._operator_rows_layout.takeAt(0)
+                widget = item.widget()
+                if widget is not None:
+                    widget.deleteLater()
+            self._operator_controls.clear()
+
+            for descriptor in controls:
+                name = str(descriptor["name"])
+                lower = float(descriptor["lower"])
+                upper = float(descriptor["upper"])
+                value = min(max(float(descriptor["value"]), lower), upper)
+                scale = float(descriptor.get("display_scale", 1.0))
+                units = str(descriptor.get("units", ""))
+                role = str(descriptor.get("role", "조작"))
+                label_text = str(descriptor.get("label", name))
+
+                row = QWidget(self._operator_panel)
+                row_layout = QVBoxLayout(row)
+                row_layout.setContentsMargins(0, 0, 0, 0)
+                row_layout.setSpacing(3)
+                header = QHBoxLayout()
+                title = QLabel(f"{role} · {label_text}")
+                title.setStyleSheet("font-weight: 600;")
+                value_label = QLabel()
+                value_label.setStyleSheet("color: #83e3c1; font-weight: 700;")
+                header.addWidget(title, 1)
+                header.addWidget(value_label)
+                row_layout.addLayout(header)
+                slider = _NoWheelSlider(Qt.Orientation.Horizontal, row)
+                slider.setRange(0, 1000)
+                if upper > lower:
+                    slider_value = round((value - lower) / (upper - lower) * 1000.0)
+                else:
+                    slider_value = 0
+                slider.setValue(int(min(max(slider_value, 0), 1000)))
+                slider.setToolTip(
+                    str(
+                        descriptor.get(
+                            "hint", "상태 0 ← 가운데 → 상태 1"
+                        )
+                    )
+                )
+                row_layout.addWidget(slider)
+                direction_hint = QLabel(
+                    str(descriptor.get("hint", "상태 0 ← 가운데 → 상태 1"))
+                )
+                direction_hint.setStyleSheet(
+                    "color: #d8e2e8; font-size: 10px; font-weight: 600;"
+                )
+                direction_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                row_layout.addWidget(direction_hint)
+                markers = QLabel(
+                    f"{lower * scale:.1f}{units}   ←   가운데   →   "
+                    f"{upper * scale:.1f}{units}"
+                )
+                markers.setStyleSheet("color: #aebbc4; font-size: 10px;")
+                markers.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                row_layout.addWidget(markers)
+                self._operator_rows_layout.addWidget(row)
+                self._operator_controls[name] = {
+                    "lower": lower,
+                    "upper": upper,
+                    "scale": scale,
+                    "units": units,
+                    "slider": slider,
+                    "value_label": value_label,
+                }
+                self._set_operator_value_label(name, value)
+                slider.valueChanged.connect(
+                    lambda slider_position, joint_name=name: self._operator_slider_changed(
+                        joint_name, slider_position
+                    )
+                )
+
+            self._operator_hint.setText(
+                "슬라이더를 움직이면 3D 동작에 즉시 반영됩니다."
+                if self._operator_controls
+                else "조작 가능한 구동 관절이 없습니다."
+            )
+            self._operator_panel.adjustSize()
+            self._position_operator_panel()
+
+        def _operator_slider_changed(self, name: str, slider_position: int) -> None:
+            control = self._operator_controls.get(name)
+            if control is None:
+                return
+            lower = float(control["lower"])
+            upper = float(control["upper"])
+            value = lower + (upper - lower) * float(slider_position) / 1000.0
+            self._set_operator_value_label(name, value)
+            self.operatorControlChanged.emit(name, float(value))
+
+        def _set_operator_value_label(self, name: str, value: float) -> None:
+            control = self._operator_controls.get(name)
+            if control is None:
+                return
+            display_value = float(value) * float(control["scale"])
+            control["value_label"].setText(
+                f"{display_value:.2f}{control['units']}"
+            )
 
         def _render_completed(self, _caller: Any, _event: str) -> None:
             self._frames_since_sample += 1
@@ -1206,6 +1789,9 @@ else:
             self._fps_label.raise_()
             self._shortcut_label.raise_()
             self._play_button.raise_()
+            self._control_play_button.raise_()
+            if self._operator_panel.isVisible():
+                self._operator_panel.raise_()
 
         def _queue_resize_render(self) -> None:
             """Coalesce layout changes and redraw after QVTK has its new size."""

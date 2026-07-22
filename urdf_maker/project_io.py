@@ -9,7 +9,7 @@ import numpy as np
 from .model import JointSpec, LinkSpec, RobotProject
 
 
-PROJECT_VERSION = 1
+PROJECT_VERSION = 4
 
 
 def _portable_source_path(source_path: str | None, project_path: Path) -> str | None:
@@ -96,7 +96,18 @@ def project_to_dict(project: RobotProject, project_path: str | Path) -> dict[str
                 "upper": joint.upper,
                 "effort": joint.effort,
                 "velocity": joint.velocity,
+                "damping": joint.damping,
+                "friction": joint.friction,
                 "position": joint.position,
+                "mimic_joint": joint.mimic_joint,
+                "mimic_multiplier": joint.mimic_multiplier,
+                "mimic_offset": joint.mimic_offset,
+                "mimic_auto": joint.mimic_auto,
+                "mimic_reverse": joint.mimic_reverse,
+                "drive_source_joint": joint.drive_source_joint,
+                "drive_max_velocity": joint.drive_max_velocity,
+                "drive_deadband": joint.drive_deadband,
+                "drive_reverse": joint.drive_reverse,
             }
             for joint in project.joints
         ],
@@ -236,7 +247,18 @@ def apply_project_config(
                     upper=item.get("upper"),
                     effort=item.get("effort", 100.0),
                     velocity=item.get("velocity", 1.0),
+                    damping=item.get("damping", 0.0),
+                    friction=item.get("friction", 0.0),
                     position=item.get("position", 0.0),
+                    mimic_joint=item.get("mimic_joint"),
+                    mimic_multiplier=item.get("mimic_multiplier", 1.0),
+                    mimic_offset=item.get("mimic_offset", 0.0),
+                    mimic_auto=item.get("mimic_auto", False),
+                    mimic_reverse=item.get("mimic_reverse", False),
+                    drive_source_joint=item.get("drive_source_joint"),
+                    drive_max_velocity=item.get("drive_max_velocity", 2.0 * np.pi),
+                    drive_deadband=item.get("drive_deadband", 0.03),
+                    drive_reverse=item.get("drive_reverse", False),
                 )
             )
         except (KeyError, TypeError, ValueError) as exc:
@@ -253,6 +275,10 @@ def apply_project_config(
     metadata = payload.get("metadata")
     if isinstance(metadata, dict):
         project.metadata.update(metadata)
+    try:
+        project.apply_mimic_positions()
+    except (KeyError, ValueError):
+        warnings.append("일부 관절 연동값을 현재 프로젝트에 적용하지 못했습니다.")
     return warnings
 
 

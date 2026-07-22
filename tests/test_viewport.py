@@ -85,8 +85,12 @@ def test_replacing_parts_preserves_camera_and_candidate_axes_can_be_highlighted(
             {"A": (1, 0, 0), "B": (0, 1, 0), "C": (0, 0, 1)},
             0.25,
             selected="B",
+            selected_direction=(0, 1, 0),
+            rotational=True,
         )
         assert set(viewport._candidate_axis_actors) == {"A", "B", "C"}
+        assert set(viewport._actor_to_candidate_axis.values()) == {"A", "B", "C"}
+        assert len(viewport._candidate_aux_actors) >= 8
         assert (
             viewport._candidate_axis_actors["B"].GetProperty().GetLineWidth()
             > viewport._candidate_axis_actors["A"].GetProperty().GetLineWidth()
@@ -96,6 +100,22 @@ def test_replacing_parts_preserves_camera_and_candidate_axes_can_be_highlighted(
             viewport._candidate_axis_actors["C"].GetProperty().GetLineWidth()
             > viewport._candidate_axis_actors["B"].GetProperty().GetLineWidth()
         )
+
+        edited: list[tuple[object, object]] = []
+        viewport.axisHandlesChanged.connect(
+            lambda origin, direction: edited.append((origin, direction))
+        )
+        viewport.set_axis_edit_handles((0.5, 0.5, 0.0), (0.0, 0.0, 1.0), 0.25)
+        assert viewport._axis_line_widget is not None
+        representation = viewport._axis_line_representation
+        assert representation is not None
+        representation.SetPoint1WorldPosition((0.2, 0.3, 0.4))
+        representation.SetPoint2WorldPosition((0.2, 0.3, 1.4))
+        viewport._axis_edit_handles_interacted(None, None)
+        np.testing.assert_allclose(edited[-1][0], (0.2, 0.3, 0.9))
+        np.testing.assert_allclose(edited[-1][1], (0.0, 0.0, 1.0))
+        viewport.clear_axis_edit_handles()
+        assert viewport._axis_line_widget is None
     finally:
         viewport._vtk_widget.Finalize()
         viewport.close()
@@ -129,10 +149,56 @@ def test_viewport_shows_fps_overlay_and_uses_60_hz_update_hint() -> None:
         viewport.animationToggled.connect(toggles.append)
         viewport._play_button.click()
         assert toggles[-1] is True
-        assert viewport._play_button.text() == "■ Stop"
+        assert viewport._play_button.text() == "■ 자동 정지"
         viewport._play_button.click()
         assert toggles[-1] is False
-        assert viewport._play_button.text() == "▶ Play"
+        assert viewport._play_button.text() == "▶ 자동"
+
+        control_toggles: list[bool] = []
+        values: list[tuple[str, float]] = []
+        viewport.controlAnimationToggled.connect(control_toggles.append)
+        viewport.operatorControlChanged.connect(
+            lambda name, value: values.append((name, value))
+        )
+        viewport.set_operator_controls(
+            [
+                {
+                    "name": "handle_joint",
+                    "label": "handle",
+                    "role": "연동 입력",
+                    "lower": -1.0,
+                    "upper": 1.0,
+                    "value": 0.0,
+                    "display_scale": 1.0,
+                    "units": "",
+                }
+            ]
+        )
+        viewport._control_play_button.click()
+        assert control_toggles[-1] is True
+        viewport.set_control_animation_playing(True)
+        assert not viewport._operator_panel.isHidden()
+        viewport._operator_controls["handle_joint"]["slider"].setValue(1000)
+        assert values[-1] == ("handle_joint", 1.0)
+        viewport._control_play_button.click()
+        assert control_toggles[-1] is False
+        viewport.set_control_animation_playing(False)
+        assert viewport._operator_panel.isHidden()
+    finally:
+        viewport._vtk_widget.Finalize()
+        viewport.close()
+        viewport.deleteLater()
+        app.processEvents()
+
+
+def test_prismatic_axis_marker_uses_compact_arrow_proportions() -> None:
+    app = _app()
+    viewport = ViewportWidget()
+    try:
+        viewport.set_axis_marker((0, 0, 0), (1, 0, 0), 1.0)
+        assert np.isclose(viewport._axis_source.GetShaftRadius(), 0.010)
+        assert np.isclose(viewport._axis_source.GetTipRadius(), 0.035)
+        assert np.isclose(viewport._axis_source.GetTipLength(), 0.18)
     finally:
         viewport._vtk_widget.Finalize()
         viewport.close()

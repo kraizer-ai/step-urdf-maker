@@ -11,6 +11,7 @@ from urdf_maker.ui.editors import NewLinkDialog
 from urdf_maker.ui.main_window import (
     MainWindow,
     ROLE_ID,
+    _cad_joint_axis_candidates,
     _geometry_principal_axes,
     _stable_part_display_color,
 )
@@ -64,6 +65,59 @@ def test_geometry_principal_axes_find_a_tilted_plane_normal() -> None:
     assert abs(float(np.dot(axes["C"], expected_normal))) > 0.999
 
 
+def test_cad_joint_axis_prefers_shared_centerline_even_with_different_radii() -> None:
+    parent = _part("parent", 0.0)
+    child = _part("child", 0.0)
+    parent.feature_axes = [
+        {
+            "kind": "cylinder",
+            "origin": (0.0, 0.0, 0.0),
+            "direction": (0.0, 0.0, 1.0),
+            "radius": 0.037,
+            "length": 0.08,
+        },
+        {
+            "kind": "cylinder",
+            "origin": (0.004, 0.0, 0.0),
+            "direction": (0.0, 0.0, 1.0),
+            "radius": 0.035,
+            "length": 0.08,
+        },
+    ]
+    child.feature_axes = [
+        {
+            "kind": "cylinder",
+            "origin": (0.0, 0.0, 0.2),
+            "direction": (0.0, 0.0, -1.0),
+            "radius": 0.035,
+            "length": 0.05,
+        }
+    ]
+
+    candidates = _cad_joint_axis_candidates([child], [parent])
+
+    assert candidates[0]["shared"] is True
+    np.testing.assert_allclose(candidates[0]["origin"], (0.0, 0.0, 0.0))
+    np.testing.assert_allclose(candidates[0]["direction"], (0.0, 0.0, 1.0))
+    assert math.isclose(candidates[0]["parent_radius"], 0.037)
+    assert math.isclose(candidates[0]["child_radius"], 0.035)
+
+
+def test_child_only_wheel_cylinder_does_not_hide_bbox_translation_axes() -> None:
+    child = _part("wheel_bar", 0.0)
+    child.feature_axes = [
+        {
+            "kind": "cylinder",
+            "origin": (0.0, 0.0, 0.0),
+            "direction": (0.0, 0.0, 1.0),
+            "radius": 0.065,
+            "length": 0.04,
+        }
+    ]
+
+    assert _cad_joint_axis_candidates([child], []) == []
+
+
 def test_add_child_requires_child_geometry_selection() -> None:
     app = _app()
     base = _part("base_part", 0.0)
@@ -82,6 +136,69 @@ def test_add_child_requires_child_geometry_selection() -> None:
         dialog_class.assert_not_called()
         assert window.left_tabs.currentIndex() == 0
         assert "자식 형상" in window.statusBar().currentMessage()
+    finally:
+        window._dirty = False
+        window.viewport._vtk_widget.Finalize()
+        window.close()
+        window.deleteLater()
+        app.processEvents()
+
+
+def test_mechanism_wizard_creates_standard_joint_and_metadata() -> None:
+    app = _app()
+    base = _part("base_part", 0.0)
+    lid = _part("lid_part", 0.2)
+    project = RobotProject(
+        "box",
+        parts=[base, lid],
+        links=[LinkSpec("base_link", [base.id, lid.id])],
+        root_link="base_link",
+    )
+    preset = {
+        "preset": "hinge",
+        "title": "문·뚜껑·레버 (회전)",
+        "parent": "base_link",
+        "link_name": "lid_link",
+        "joint_type": "revolute",
+        "lower": 0.0,
+        "upper": 90.0,
+        "state_0": "닫힘",
+        "state_1": "열림",
+        "source_mode": "none",
+        "source_joint": None,
+        "reverse": False,
+        "max_rpm": 60.0,
+        "deadband": 0.03,
+        "effort": 100.0,
+        "velocity": math.radians(45.0),
+        "damping": 0.1,
+        "friction": 0.02,
+        "simulation_role": "position",
+    }
+    window = MainWindow()
+    try:
+        window._set_project(project, None)
+        window._set_selected_parts([lid.id])
+        with patch("urdf_maker.ui.main_window.MechanismWizard") as wizard_class:
+            wizard = wizard_class.return_value
+            wizard.exec.return_value = QDialog.DialogCode.Accepted
+            wizard.values.return_value = preset
+            window.open_mechanism_wizard()
+
+        dialog = window._new_link_dialog
+        assert dialog is not None
+        assert dialog.type_combo.currentText() == "revolute"
+        assert dialog.lower_state_label.text() == "닫힘"
+        dialog.accept()
+        app.processEvents()
+
+        joint = project.joint("lid_link_joint")
+        assert joint.type == "revolute"
+        assert math.isclose(joint.upper, math.pi / 2.0)
+        assert math.isclose(joint.velocity, math.radians(45.0))
+        assert joint.damping == 0.1
+        assert joint.friction == 0.02
+        assert project.metadata["mechanisms"][0]["joint"] == "lid_link_joint"
     finally:
         window._dirty = False
         window.viewport._vtk_widget.Finalize()
@@ -176,7 +293,7 @@ def test_link_selection_centers_axis_marker_and_demo_restores_position() -> None
         window._demo_last_tick -= 0.1
         window._advance_demo_animation()
         assert not np.isclose(joint.position, 0.25)
-        assert not np.allclose(
+        assert np.allclose(
             window.viewport.renderer.GetActiveCamera().GetPosition(),
             original_camera,
         )
@@ -184,7 +301,7 @@ def test_link_selection_centers_axis_marker_and_demo_restores_position() -> None
         window.viewport._play_button.click()
         assert not window._demo_timer.isActive()
         assert np.isclose(joint.position, 0.25)
-        assert window.viewport._play_button.text() == "▶ Play"
+        assert window.viewport._play_button.text() == "▶ 자동"
     finally:
         window.viewport._vtk_widget.Finalize()
         window.close()
@@ -236,6 +353,212 @@ def test_revolute_axis_marker_passes_through_actual_joint_origin() -> None:
         app.processEvents()
 
 
+def test_main_window_driver_slider_moves_mimic_axle_and_wheel() -> None:
+    app = _app()
+    base = _part("base_part", 0.0)
+    handle = _part("handle_part", 0.2)
+    axle = _part("axle_part", 0.4)
+    wheel = _part("wheel_part", 0.5)
+    project = RobotProject(
+        "mimic_preview",
+        parts=[base, handle, axle, wheel],
+        links=[
+            LinkSpec("base", [base.id]),
+            LinkSpec("handle", [handle.id]),
+            LinkSpec("axle", [axle.id]),
+            LinkSpec("wheel", [wheel.id]),
+        ],
+        joints=[
+            JointSpec(
+                "handle_joint",
+                "revolute",
+                "base",
+                "handle",
+                lower=-math.pi,
+                upper=math.pi,
+            ),
+            JointSpec(
+                "axle_joint",
+                "prismatic",
+                "base",
+                "axle",
+                lower=-0.05,
+                upper=0.05,
+                mimic_joint="handle_joint",
+                mimic_auto=True,
+            ),
+            JointSpec("wheel_mount", "fixed", "axle", "wheel"),
+        ],
+        root_link="base",
+    )
+    window = MainWindow()
+    try:
+        window._set_project(project, None)
+        window._select_link_item("handle")
+        window.set_current_joint_position(math.pi / 2.0)
+
+        assert math.isclose(project.joint("axle_joint").position, 0.025)
+        axle_matrix = window.viewport._parts["axle_part"].actor.GetUserMatrix()
+        wheel_matrix = window.viewport._parts["wheel_part"].actor.GetUserMatrix()
+        assert math.isclose(axle_matrix.GetElement(0, 3), 0.025)
+        assert math.isclose(wheel_matrix.GetElement(0, 3), 0.025)
+
+        window._set_demo_playing(True)
+        assert "handle_joint" in {joint.name for joint in window._demo_joints}
+        assert "axle_joint" not in {joint.name for joint in window._demo_joints}
+        window._set_demo_playing(False)
+    finally:
+        window._dirty = False
+        window.viewport._vtk_widget.Finalize()
+        window.close()
+        window.deleteLater()
+        app.processEvents()
+
+
+def test_play_integrates_wheel_speed_from_manual_direction_lever() -> None:
+    app = _app()
+    base = _part("base_part", 0.0)
+    lever = _part("lever_part", 0.2)
+    wheel = _part("wheel_part", 0.4)
+    project = RobotProject(
+        "drive_preview",
+        parts=[base, lever, wheel],
+        links=[
+            LinkSpec("base", [base.id]),
+            LinkSpec("lever", [lever.id]),
+            LinkSpec("wheel", [wheel.id]),
+        ],
+        joints=[
+            JointSpec(
+                "direction_lever",
+                "revolute",
+                "base",
+                "lever",
+                lower=-1.0,
+                upper=1.0,
+                position=1.0,
+            ),
+            JointSpec(
+                "wheel_joint",
+                "continuous",
+                "base",
+                "wheel",
+                drive_source_joint="direction_lever",
+                drive_max_velocity=2.0,
+                drive_deadband=0.0,
+            ),
+        ],
+        root_link="base",
+    )
+    window = MainWindow()
+    try:
+        window._set_project(project, None)
+        window._select_link_item("lever")
+        window._set_control_playing(True)
+
+        assert window._demo_timer.isActive()
+        assert not window._demo_joints
+        assert [joint.name for joint in window._demo_drive_joints] == ["wheel_joint"]
+        assert window._animation_mode == "control"
+        assert set(window.viewport._operator_controls) == {"direction_lever"}
+        assert window.left_panel.isHidden()
+        assert window.inspector_dock.isHidden()
+        window._demo_last_tick -= 0.1
+        window._advance_demo_animation()
+        assert project.joint("wheel_joint").position > 0.19
+
+        window._set_operator_control_value("direction_lever", -1.0)
+        previous = project.joint("wheel_joint").position
+        window._demo_last_tick -= 0.1
+        window._advance_demo_animation()
+        assert project.joint("wheel_joint").position < previous
+
+        window._set_control_playing(False)
+        assert math.isclose(project.joint("wheel_joint").position, 0.0)
+        assert not window.left_panel.isHidden()
+        assert not window.inspector_dock.isHidden()
+    finally:
+        window._dirty = False
+        window.viewport._vtk_widget.Finalize()
+        window.close()
+        window.deleteLater()
+        app.processEvents()
+
+
+def test_control_play_exposes_only_mimic_and_drive_source_joints() -> None:
+    app = _app()
+    part_names = ["base", "handle", "knuckle", "lever", "wheel"]
+    parts = [_part(f"{name}_part", index * 0.2) for index, name in enumerate(part_names)]
+    project = RobotProject(
+        "operator_controls",
+        parts=parts,
+        links=[
+            LinkSpec(name, [part.id]) for name, part in zip(part_names, parts, strict=True)
+        ],
+        joints=[
+            JointSpec(
+                "handle_joint",
+                "revolute",
+                "base",
+                "handle",
+                lower=-1.0,
+                upper=1.0,
+            ),
+            JointSpec(
+                "knuckle_joint",
+                "revolute",
+                "base",
+                "knuckle",
+                lower=-0.5,
+                upper=0.5,
+                mimic_joint="handle_joint",
+                mimic_auto=True,
+            ),
+            JointSpec(
+                "drive_lever",
+                "revolute",
+                "base",
+                "lever",
+                lower=-0.4,
+                upper=0.4,
+            ),
+            JointSpec(
+                "wheel_joint",
+                "continuous",
+                "knuckle",
+                "wheel",
+                drive_source_joint="drive_lever",
+            ),
+        ],
+        root_link="base",
+    )
+    window = MainWindow()
+    try:
+        window._set_project(project, None)
+        descriptors = window._operator_control_descriptors()
+        assert [item["name"] for item in descriptors] == [
+            "handle_joint",
+            "drive_lever",
+        ]
+
+        window._set_control_playing(True)
+        assert set(window.viewport._operator_controls) == {
+            "handle_joint",
+            "drive_lever",
+        }
+        window.viewport._operator_controls["handle_joint"]["slider"].setValue(1000)
+        assert math.isclose(project.joint("knuckle_joint").position, 0.5)
+        window._set_control_playing(False)
+        assert math.isclose(project.joint("handle_joint").position, 0.0)
+        assert math.isclose(project.joint("knuckle_joint").position, 0.0)
+    finally:
+        window._dirty = False
+        window.viewport._vtk_widget.Finalize()
+        window.close()
+        window.deleteLater()
+        app.processEvents()
+
+
 def test_new_child_preview_uses_selected_bundle_bbox_center_and_parent_context() -> None:
     app = _app()
     base = _part("base_part", 0.0)
@@ -270,6 +593,8 @@ def test_new_child_preview_uses_selected_bundle_bbox_center_and_parent_context()
         assert window.viewport.selected_ids() == ["handle_part"]
 
         dialog.type_combo.setCurrentText("revolute")
+        dialog.lower_spin.setValue(-45.0)
+        dialog.upper_spin.setValue(45.0)
         dialog.preview_slider.setValue(100)
         window._preview_new_link_motion(dialog, "base_link", ["handle_part"])
         actual = window.viewport._parts["handle_part"].actor.GetUserMatrix()
@@ -456,11 +781,9 @@ def test_new_manual_tree_and_nested_children_follow_selected_parent() -> None:
         window.current_link = "left_hand"
         camera.SetPosition(3.2, -2.1, 1.7)
         camera.SetFocalPoint(0.1, 0.05, 0.0)
-        camera_before_dialog = window.viewport.capture_camera_state()
         window._set_selected_parts(["right_hand_part"])
         with patch("urdf_maker.ui.main_window.NewLinkDialog") as dialog_class:
             dialog = dialog_class.return_value
-            dialog.exec.return_value = QDialog.DialogCode.Accepted
             dialog.values.return_value = {
                 "link_name": "right_hand",
                 "parent": "manual_base",
@@ -470,16 +793,26 @@ def test_new_manual_tree_and_nested_children_follow_selected_parent() -> None:
                 "upper": 0.12,
             }
             window.add_child_link_from_selection()
+            assert window._new_link_dialog is dialog
+            dialog.show.assert_called_once()
+            assert not dialog.exec.called
+
+            camera.SetPosition(1.7, -1.3, 0.9)
+            camera.SetFocalPoint(0.22, 0.04, 0.02)
+            camera_adjusted = window.viewport.capture_camera_state()
+            finished_callback = dialog.finished.connect.call_args.args[0]
+            finished_callback(QDialog.DialogCode.Accepted)
 
         camera_after_dialog = window.viewport.capture_camera_state()
         np.testing.assert_allclose(
             camera_after_dialog["position"],
-            camera_before_dialog["position"],
+            camera_adjusted["position"],
         )
         np.testing.assert_allclose(
             camera_after_dialog["focal_point"],
-            camera_before_dialog["focal_point"],
+            camera_adjusted["focal_point"],
         )
+        assert window._new_link_dialog is None
 
         assert dialog_class.call_args.kwargs["default_parent"] == "left_hand"
         assert dialog_class.call_args.kwargs["lock_parent"] is False

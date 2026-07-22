@@ -82,6 +82,42 @@ def _write_two_occurrence_step(path: Path) -> None:
     assert writer.Write(str(path)) == IFSelect_RetDone
 
 
+def _write_cylinder_step(path: Path) -> None:
+    pytest.importorskip("OCP")
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeCylinder
+    from OCP.IFSelect import IFSelect_RetDone
+    from OCP.STEPCAFControl import STEPCAFControl_Writer
+    from OCP.TCollection import TCollection_ExtendedString
+    from OCP.TDataStd import TDataStd_Name
+    from OCP.TDocStd import TDocStd_Document
+    from OCP.TopLoc import TopLoc_Location
+    from OCP.XCAFApp import XCAFApp_Application
+    from OCP.XCAFDoc import XCAFDoc_DocumentTool
+    from OCP.gp import gp_Trsf, gp_Vec
+
+    application = XCAFApp_Application.GetApplication_s()
+    document = TDocStd_Document(TCollection_ExtendedString("cylinder-axis-test"))
+    application.NewDocument(TCollection_ExtendedString("MDTV-XCAF"), document)
+    shape_tool = XCAFDoc_DocumentTool.ShapeTool_s(document.Main())
+    assembly = shape_tool.NewShape()
+    definition = shape_tool.AddShape(
+        BRepPrimAPI_MakeCylinder(35.0, 80.0).Shape(), False
+    )
+    TDataStd_Name.Set_s(definition, TCollection_ExtendedString("shaft_definition"))
+    transform = gp_Trsf()
+    transform.SetTranslation(gp_Vec(10.0, 20.0, 30.0))
+    occurrence = shape_tool.AddComponent(
+        assembly, definition, TopLoc_Location(transform)
+    )
+    TDataStd_Name.Set_s(occurrence, TCollection_ExtendedString("shaft"))
+    shape_tool.UpdateAssemblies()
+
+    writer = STEPCAFControl_Writer()
+    writer.SetNameMode(True)
+    assert writer.Transfer(document)
+    assert writer.Write(str(path)) == IFSelect_RetDone
+
+
 def test_xcaf_restores_occurrence_names_and_world_placements(tmp_path: Path) -> None:
     source = tmp_path / "two_jaws.step"
     _write_two_occurrence_step(source)
@@ -106,6 +142,23 @@ def test_xcaf_restores_occurrence_names_and_world_placements(tmp_path: Path) -> 
     np.testing.assert_allclose(
         project.parts[result.parts[1].id].vertices_zero, result.parts[1].vertices
     )
+
+
+def test_step_loader_preserves_exact_cylindrical_feature_axis(tmp_path: Path) -> None:
+    source = tmp_path / "shaft.step"
+    _write_cylinder_step(source)
+
+    result = load_step(source, linear_deflection=0.001)
+
+    assert len(result.parts) == 1
+    axes = result.parts[0].feature_axes
+    assert axes
+    cylindrical = min(axes, key=lambda item: abs(item["radius"] - 0.035))
+    assert cylindrical["kind"] == "cylinder"
+    assert cylindrical["radius"] == pytest.approx(0.035)
+    assert cylindrical["length"] == pytest.approx(0.08)
+    np.testing.assert_allclose(cylindrical["origin"], (0.01, 0.02, 0.07))
+    np.testing.assert_allclose(cylindrical["direction"], (0.0, 0.0, 1.0))
 
 
 def test_plain_stepcontrol_fallback_enumerates_solids(tmp_path: Path) -> None:

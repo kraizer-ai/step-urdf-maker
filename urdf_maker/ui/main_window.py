@@ -51,6 +51,7 @@ from ..step_subprocess import load_step_project_isolated
 from ..urdf_io import export_urdf, load_urdf
 from .editors import JointEditorWidget, NewLinkDialog
 from .viewport import ViewportWidget
+from .wizards import MechanismWizard, SimulationExportDialog
 
 
 ROLE_ID = Qt.ItemDataRole.UserRole
@@ -103,6 +104,148 @@ def _geometry_principal_axes(vertices: Iterable[np.ndarray]) -> dict[str, np.nda
     }
 
 
+def _coerce_feature_axis(raw: Any) -> dict[str, Any] | None:
+    try:
+        origin = np.asarray(raw["origin"], dtype=float)
+        direction = np.asarray(raw["direction"], dtype=float)
+        radius = float(raw.get("radius", 0.0))
+        length = float(raw.get("length", 0.0))
+    except (KeyError, TypeError, ValueError):
+        return None
+    norm = float(np.linalg.norm(direction))
+    if (
+        origin.shape != (3,)
+        or direction.shape != (3,)
+        or not np.all(np.isfinite(origin))
+        or not np.all(np.isfinite(direction))
+        or norm <= 1.0e-12
+        or not math.isfinite(radius)
+    ):
+        return None
+    return {
+        "origin": origin,
+        "direction": direction / norm,
+        "radius": max(radius, 0.0),
+        "length": max(length, 0.0) if math.isfinite(length) else 0.0,
+    }
+
+
+def _axis_line_distance(
+    first_origin: np.ndarray,
+    first_direction: np.ndarray,
+    second_origin: np.ndarray,
+) -> float:
+    delta = second_origin - first_origin
+    return float(
+        np.linalg.norm(delta - np.dot(delta, first_direction) * first_direction)
+    )
+
+
+def _cad_joint_axis_candidates(
+    child_parts: Iterable[Any],
+    parent_parts: Iterable[Any],
+    *,
+    limit: int = 3,
+) -> list[dict[str, Any]]:
+    """Rank exact STEP cylinder axes shared by child and parent geometry."""
+
+    child_axes = [
+        candidate
+        for part in child_parts
+        for raw in getattr(part, "feature_axes", ())
+        if (candidate := _coerce_feature_axis(raw)) is not None
+    ]
+    parent_axes = [
+        candidate
+        for part in parent_parts
+        for raw in getattr(part, "feature_axes", ())
+        if (candidate := _coerce_feature_axis(raw)) is not None
+    ]
+    ranked: list[dict[str, Any]] = []
+    for parent_axis in parent_axes:
+        for child_axis in child_axes:
+            alignment = abs(
+                float(
+                    np.dot(
+                        parent_axis["direction"],
+                        child_axis["direction"],
+                    )
+                )
+            )
+            if alignment < 0.9995:
+                continue
+            distance = _axis_line_distance(
+                parent_axis["origin"],
+                parent_axis["direction"],
+                child_axis["origin"],
+            )
+            radius_scale = max(
+                parent_axis["radius"],
+                child_axis["radius"],
+                0.001,
+            )
+            # STEP cylinder axes are analytic, so a generous multi-millimetre
+            # allowance tends to join merely adjacent holes.  Keep a small
+            # manufacturing/authoring tolerance while requiring the same
+            # practical centerline.  Radius is deliberately not a hard gate:
+            # shafts and bores commonly have different fit diameters.
+            distance_limit = max(0.0002, min(radius_scale * 0.02, 0.001))
+            if distance > distance_limit:
+                continue
+            radius_difference = (
+                abs(parent_axis["radius"] - child_axis["radius"])
+                / radius_scale
+            )
+            score = (
+                distance / distance_limit
+                + radius_difference * 0.75
+                + (1.0 - alignment) * 20.0
+            )
+            ranked.append(
+                {
+                    "origin": parent_axis["origin"].copy(),
+                    "direction": parent_axis["direction"].copy(),
+                    "parent_radius": parent_axis["radius"],
+                    "child_radius": child_axis["radius"],
+                    "score": score,
+                    "shared": True,
+                }
+            )
+
+    # A cylinder found only on the selected child is often a wheel, bearing,
+    # or decorative hole and says nothing about how the child moves relative
+    # to its parent.  Do not let those axes occupy all A/B/C slots.  Without a
+    # matching parent centerline the caller falls back to the selected bundle's
+    # principal BBox directions, whose A axis is the useful long/horizontal
+    # translation direction for racks and axle bars.
+
+    unique: list[dict[str, Any]] = []
+    for candidate in sorted(ranked, key=lambda item: item["score"]):
+        duplicate = False
+        for existing in unique:
+            alignment = abs(
+                float(np.dot(candidate["direction"], existing["direction"]))
+            )
+            if alignment < 0.999:
+                continue
+            if (
+                _axis_line_distance(
+                    existing["origin"],
+                    existing["direction"],
+                    candidate["origin"],
+                )
+                <= 0.001
+            ):
+                duplicate = True
+                break
+        if duplicate:
+            continue
+        unique.append(candidate)
+        if len(unique) >= limit:
+            break
+    return unique
+
+
 class _WorkerSignals(QObject):
     finished = Signal(object)
     failed = Signal(str)
@@ -144,8 +287,13 @@ class MainWindow(QMainWindow):
         self._settings = QSettings()
         self._demo_original_positions: dict[str, float] = {}
         self._demo_joints: list[JointSpec] = []
+        self._demo_drive_joints: list[JointSpec] = []
+        self._animation_mode: str | None = None
+        self._operator_panel_visibility: tuple[bool, bool, bool] | None = None
         self._demo_started_at = 0.0
         self._demo_last_tick = 0.0
+        self._new_link_dialog: NewLinkDialog | None = None
+        self._pending_mechanism_preset: dict[str, Any] | None = None
         self._demo_timer = QTimer(self)
         self._demo_timer.setInterval(33)
         self._demo_timer.setTimerType(Qt.TimerType.PreciseTimer)
@@ -194,6 +342,12 @@ class MainWindow(QMainWindow):
         self.clear_selection_action = QAction("선택 해제", self)
         self.clear_selection_action.setShortcut(QKeySequence.StandardKey.Cancel)
         self.clear_selection_action.triggered.connect(lambda: self._set_selected_parts([]))
+        self.mechanism_wizard_action = QAction("대표 기구 마법사…", self)
+        self.mechanism_wizard_action.setShortcut(QKeySequence("Ctrl+M"))
+        self.mechanism_wizard_action.setToolTip(
+            "문·슬라이더·회전체·연동 기구·컨베이어의 기본 관절을 단계별로 만듭니다."
+        )
+        self.mechanism_wizard_action.triggered.connect(self.open_mechanism_wizard)
 
         file_menu = self.menuBar().addMenu("파일")
         file_menu.addAction(self.open_step_action)
@@ -226,6 +380,9 @@ class MainWindow(QMainWindow):
         self.hide_assigned_action.toggled.connect(self._assigned_visibility_changed)
         view_menu.addAction(self.hide_assigned_action)
 
+        configure_menu = self.menuBar().addMenu("구성")
+        configure_menu.addAction(self.mechanism_wizard_action)
+
         toolbar = self.addToolBar("기본 도구")
         toolbar.setMovable(False)
         toolbar.addAction(self.open_step_action)
@@ -235,12 +392,15 @@ class MainWindow(QMainWindow):
         toolbar.addAction(self.export_action)
         toolbar.addSeparator()
         toolbar.addAction(self.frame_action)
+        toolbar.addSeparator()
+        toolbar.addAction(self.mechanism_wizard_action)
 
     def _build_ui(self) -> None:
         splitter = QSplitter(Qt.Orientation.Horizontal)
         splitter.setChildrenCollapsible(False)
 
         left = QWidget()
+        self.left_panel = left
         left_layout = QVBoxLayout(left)
         left_layout.setContentsMargins(8, 8, 4, 8)
         title = QLabel("형상과 링크")
@@ -315,6 +475,13 @@ class MainWindow(QMainWindow):
         tree_buttons.addWidget(self.new_tree_button)
         tree_buttons.addWidget(self.add_child_button, 1)
         link_layout.addLayout(tree_buttons)
+        self.mechanism_wizard_button = QPushButton("대표 기구 마법사…  (Ctrl+M)")
+        self.mechanism_wizard_button.setToolTip(
+            "선택한 형상으로 문·뚜껑, 슬라이더, 회전체, mimic 연동 또는 "
+            "컨베이어 롤러를 만든 뒤 3D에서 축을 정밀 조정합니다."
+        )
+        self.mechanism_wizard_button.clicked.connect(self.open_mechanism_wizard)
+        link_layout.addWidget(self.mechanism_wizard_button)
         self.link_tree = QTreeWidget()
         self.link_tree.setHeaderLabels(["링크 (형상 수)", "0→1 동작"])
         self.link_tree.setAlternatingRowColors(True)
@@ -364,6 +531,10 @@ class MainWindow(QMainWindow):
         self.viewport = ViewportWidget()
         self.viewport.partsSelectionChanged.connect(self._viewport_selection_changed)
         self.viewport.animationToggled.connect(self._set_demo_playing)
+        self.viewport.controlAnimationToggled.connect(self._set_control_playing)
+        self.viewport.operatorControlChanged.connect(
+            self._set_operator_control_value
+        )
         splitter.addWidget(self.viewport)
 
         right_contents = QWidget()
@@ -415,6 +586,7 @@ class MainWindow(QMainWindow):
         )
 
         issues_dock = QDockWidget("검증 및 알림", self)
+        self.issues_dock = issues_dock
         issues_dock.setObjectName("issuesDock")
         issues_dock.setAllowedAreas(Qt.DockWidgetArea.BottomDockWidgetArea)
         self.issue_list = QListWidget()
@@ -688,13 +860,18 @@ class MainWindow(QMainWindow):
             return
         safe_dir = sanitize_name(package_name.strip().lower(), "robot_description").replace(".", "_")
         output_dir = Path(parent_dir) / safe_dir
+        export_options = SimulationExportDialog(self)
+        if export_options.exec() != QDialog.DialogCode.Accepted:
+            return
+        options = export_options.values()
         try:
             urdf_path = export_urdf(
                 self.project,
                 output_dir,
                 package_name=safe_dir,
-                include_collision=True,
-                include_inertial=False,
+                include_collision=bool(options["include_collision"]),
+                include_inertial=bool(options["include_inertial"]),
+                density=float(options["density"]),
             )
         except Exception as exc:
             QMessageBox.critical(self, "URDF 내보내기 실패", str(exc))
@@ -704,6 +881,9 @@ class MainWindow(QMainWindow):
 
     # ---------- project and scene ----------
     def _set_project(self, project: RobotProject, project_path: Path | None) -> None:
+        if self._new_link_dialog is not None:
+            self._new_link_dialog.reject()
+        self._pending_mechanism_preset = None
         self._stop_demo_animation(restore=True)
         self.project = project
         self.project_path = project_path
@@ -855,16 +1035,27 @@ class MainWindow(QMainWindow):
             axis_key,
             "(" + ", ".join(f"{value:.2f}" for value in axis) + ")",
         )
+        mimic_text = ""
+        if joint.mimic_joint:
+            mode = "상태 연동" if joint.mimic_auto else f"×{joint.mimic_multiplier:g}"
+            mimic_text = f" · ↳ {joint.mimic_joint} {mode}"
+        drive_text = ""
+        if joint.drive_source_joint:
+            rpm = joint.drive_max_velocity * 60.0 / (2.0 * math.pi)
+            direction = " 반전" if joint.drive_reverse else ""
+            drive_text = (
+                f" · 주행 ↳ {joint.drive_source_joint} ±{rpm:g} RPM{direction}"
+            )
         if joint.type == "prismatic":
             value0 = float(joint.lower or 0.0) * 1000.0
             value1 = float(joint.upper or 0.0) * 1000.0
-            return f"직선 {axis_text} · 0:{value0:g} → 1:{value1:g} mm"
+            return f"직선 {axis_text} · 0:{value0:g} → 1:{value1:g} mm{mimic_text}"
         if joint.type == "revolute":
             value0 = math.degrees(float(joint.lower or 0.0))
             value1 = math.degrees(float(joint.upper or 0.0))
-            return f"회전 {axis_text} · 0:{value0:g} → 1:{value1:g}°"
+            return f"회전 {axis_text} · 0:{value0:g} → 1:{value1:g}°{mimic_text}"
         if joint.type == "continuous":
-            return f"연속 회전 {axis_text}"
+            return f"연속 회전 {axis_text}{mimic_text}{drive_text}"
         return joint.type
 
     def _rebuild_viewport(
@@ -939,7 +1130,7 @@ class MainWindow(QMainWindow):
             self.viewport.set_axis_marker(
                 marker_origin,
                 direction,
-                self._scene_scale * (0.28 if rotational else 0.18),
+                self._scene_scale * (0.20 if rotational else 0.10),
                 bidirectional=rotational,
             )
         except Exception:
@@ -975,13 +1166,24 @@ class MainWindow(QMainWindow):
 
     def _set_demo_playing(self, playing: bool) -> None:
         if not playing:
-            self._stop_demo_animation(restore=True)
+            if self._animation_mode == "auto":
+                self._stop_demo_animation(restore=True)
             return
+        if self._animation_mode is not None:
+            self._stop_demo_animation(restore=True)
         if self.project is None:
             self.viewport.set_animation_playing(False)
             return
         movable: list[JointSpec] = []
+        drive_targets = [
+            joint for joint in self.project.joints if joint.drive_source_joint
+        ]
+        drive_target_names = {joint.name for joint in drive_targets}
         for joint in self.project.joints:
+            if joint.mimic_joint:
+                continue
+            if joint.name in drive_target_names:
+                continue
             if joint.type in {"prismatic", "revolute"}:
                 lower = joint.lower
                 upper = joint.upper
@@ -997,23 +1199,152 @@ class MainWindow(QMainWindow):
                 and not math.isclose(float(lower), float(upper))
             ):
                 movable.append(joint)
-        if not movable:
+        if not movable and not drive_targets:
             self.viewport.set_animation_playing(False)
             self.statusBar().showMessage("재생할 가동 관절이 없습니다.", 5000)
             return
 
+        self._animation_mode = "auto"
         self._demo_joints = movable
+        self._demo_drive_joints = drive_targets
         self._demo_original_positions = {
-            joint.name: float(joint.position) for joint in movable
+            joint.name: float(joint.position) for joint in self.project.joints
         }
         self._demo_started_at = time.perf_counter()
         self._demo_last_tick = self._demo_started_at
-        self.joint_editor.setEnabled(False)
+        self.viewport.set_control_animation_playing(False)
+        self.viewport.set_animation_playing(True)
         self._demo_timer.start()
+        if drive_targets:
+            self.statusBar().showMessage(
+                "자동 재생 중 · 모든 독립 입력과 연결된 바퀴를 자동으로 시험합니다."
+            )
         self._advance_demo_animation()
 
+    def _operator_control_descriptors(self) -> list[dict[str, Any]]:
+        if self.project is None:
+            return []
+        mimic_sources = {
+            str(joint.mimic_joint)
+            for joint in self.project.joints
+            if joint.mimic_joint
+        }
+        drive_sources = {
+            str(joint.drive_source_joint)
+            for joint in self.project.joints
+            if joint.drive_source_joint
+        }
+        descriptors: list[dict[str, Any]] = []
+        for joint in self.project.joints:
+            if joint.name not in mimic_sources | drive_sources:
+                continue
+            limits = self.project._joint_preview_limits(joint)
+            if limits is None or math.isclose(limits[0], limits[1]):
+                continue
+            if joint.type == "prismatic":
+                display_scale, units = 1000.0, " mm"
+            else:
+                display_scale, units = 180.0 / math.pi, "°"
+            roles: list[str] = []
+            if joint.name in mimic_sources:
+                roles.append("연동 입력")
+            if joint.name in drive_sources:
+                roles.append("주행 레버")
+            descriptors.append(
+                {
+                    "name": joint.name,
+                    "label": f"{joint.child} ({joint.name})",
+                    "role": " / ".join(roles),
+                    "lower": limits[0],
+                    "upper": limits[1],
+                    "value": joint.position,
+                    "display_scale": display_scale,
+                    "units": units,
+                    "hint": (
+                        "후진 ← 중립 → 전진"
+                        if joint.name in drive_sources
+                        else "상태 0 ← 가운데 → 상태 1"
+                    ),
+                }
+            )
+        return descriptors
+
+    def _set_control_playing(self, playing: bool) -> None:
+        if not playing:
+            if self._animation_mode == "control":
+                self._stop_demo_animation(restore=True)
+            return
+        if self._animation_mode is not None:
+            self._stop_demo_animation(restore=True)
+        if self.project is None:
+            self.viewport.set_control_animation_playing(False)
+            return
+        controls = self._operator_control_descriptors()
+        if not controls:
+            self.viewport.set_control_animation_playing(False)
+            self.statusBar().showMessage(
+                "조작할 구동원이 없습니다. mimic 또는 주행 구동 원본 관절을 먼저 설정하세요.",
+                7000,
+            )
+            return
+
+        self._animation_mode = "control"
+        self._demo_joints = []
+        self._demo_drive_joints = [
+            joint for joint in self.project.joints if joint.drive_source_joint
+        ]
+        self._demo_original_positions = {
+            joint.name: float(joint.position) for joint in self.project.joints
+        }
+        self._demo_started_at = time.perf_counter()
+        self._demo_last_tick = self._demo_started_at
+        self.viewport.set_operator_controls(controls)
+        self.viewport.set_animation_playing(False)
+        self.viewport.set_control_animation_playing(True)
+        self._set_operator_layout_active(True)
+        if self._demo_drive_joints:
+            self._demo_timer.start()
+            self._advance_demo_animation()
+        self.statusBar().showMessage(
+            "조작 Play · 3D 화면의 핸들/주행 레버 패널로 직접 시험합니다."
+        )
+
+    def _set_operator_control_value(self, joint_name: str, value: float) -> None:
+        if self.project is None or self._animation_mode != "control":
+            return
+        try:
+            self.project.set_joint_position(joint_name, value)
+        except (KeyError, ValueError):
+            return
+        self._update_scene_transforms()
+
+    def _set_operator_layout_active(self, active: bool) -> None:
+        if active:
+            if self._operator_panel_visibility is None:
+                self._operator_panel_visibility = (
+                    not self.left_panel.isHidden(),
+                    not self.inspector_dock.isHidden(),
+                    not self.issues_dock.isHidden(),
+                )
+            self.left_panel.hide()
+            self.inspector_dock.hide()
+            self.issues_dock.hide()
+            return
+        if self._operator_panel_visibility is None:
+            return
+        left_visible, inspector_visible, issues_visible = (
+            self._operator_panel_visibility
+        )
+        self.left_panel.setVisible(left_visible)
+        self.inspector_dock.setVisible(inspector_visible)
+        self.issues_dock.setVisible(issues_visible)
+        self._operator_panel_visibility = None
+
     def _advance_demo_animation(self) -> None:
-        if self.project is None or not self._demo_joints:
+        if self.project is None or (
+            not (self._demo_joints or self._demo_drive_joints)
+            and self._animation_mode != "control"
+        ):
             self._stop_demo_animation(restore=False)
             return
         now = time.perf_counter()
@@ -1031,9 +1362,11 @@ class MainWindow(QMainWindow):
             ratio = phase if phase <= 1.0 else 2.0 - phase
             joint.position = joint.clamp(lower + (upper - lower) * ratio)
 
-        camera = self.viewport.renderer.GetActiveCamera()
-        camera.Azimuth(8.0 * delta_seconds)
-        camera.OrthogonalizeViewUp()
+        resolved = self.project.apply_mimic_positions()
+        for joint in self._demo_drive_joints:
+            angular_velocity = self.project.drive_velocity(joint, resolved)
+            joint.position += angular_velocity * delta_seconds
+
         self._update_scene_transforms()
 
     def _stop_demo_animation(self, *, restore: bool) -> None:
@@ -1044,12 +1377,18 @@ class MainWindow(QMainWindow):
                     joint.position = joint.clamp(
                         self._demo_original_positions[joint.name]
                     )
+            self.project.apply_mimic_positions()
             if self._demo_original_positions:
                 self._update_scene_transforms()
         self._demo_joints = []
+        self._demo_drive_joints = []
         self._demo_original_positions = {}
+        self._animation_mode = None
         if hasattr(self, "viewport"):
             self.viewport.set_animation_playing(False)
+            self.viewport.set_control_animation_playing(False)
+            self.viewport.set_operator_controls([])
+        self._set_operator_layout_active(False)
         if hasattr(self, "joint_editor"):
             self._refresh_editor()
 
@@ -1058,6 +1397,7 @@ class MainWindow(QMainWindow):
             self.joint_editor.set_joint(None)
             return
         self.joint_editor.set_link_names(self.project.links.keys())
+        self.joint_editor.set_joint_specs(self.project.joints)
         try:
             joint = self.project.joint(self.current_joint) if self.current_joint else None
         except KeyError:
@@ -1289,6 +1629,7 @@ class MainWindow(QMainWindow):
                 part.link_name = None
             self.project.create_link(safe_root)
             self.project.root_link = safe_root
+            self.project.metadata.pop("mechanisms", None)
             errors = self.project.validate(check_names=False)
             if errors:
                 raise ProjectValidationError(errors)
@@ -1319,14 +1660,23 @@ class MainWindow(QMainWindow):
     def create_link_from_selection(self) -> None:
         self.add_child_link_from_selection()
 
-    def add_child_link_from_selection(self) -> None:
+    def open_mechanism_wizard(self) -> None:
         if self.project is None:
+            return
+        if self._new_link_dialog is not None:
+            self._new_link_dialog.show()
+            self._new_link_dialog.raise_()
+            self._new_link_dialog.activateWindow()
+            self.statusBar().showMessage(
+                "열려 있는 자식 링크 도구 창에서 설정을 마치거나 취소하세요.",
+                5000,
+            )
             return
         part_ids = self._selected_part_ids()
         if not part_ids:
             self.left_tabs.setCurrentIndex(0)
             self.statusBar().showMessage(
-                "먼저 3D 또는 형상 목록에서 핸들처럼 움직일 자식 형상을 선택하세요.",
+                "먼저 3D 또는 형상 목록에서 마법사로 구성할 움직이는 형상을 선택하세요.",
                 10000,
             )
             return
@@ -1342,6 +1692,57 @@ class MainWindow(QMainWindow):
                 "먼저 '전체 새로 시작'으로 Base 링크를 만드세요.",
             )
             return
+        wizard = MechanismWizard(
+            self.project.links.keys(),
+            self.project.joints,
+            default_parent=parent,
+            selected_count=len(part_ids),
+            parent=self,
+        )
+        if wizard.exec() != QDialog.DialogCode.Accepted:
+            return
+        self._pending_mechanism_preset = wizard.values()
+        self.add_child_link_from_selection()
+
+    def add_child_link_from_selection(self) -> None:
+        if self.project is None:
+            return
+        if self._new_link_dialog is not None:
+            self._new_link_dialog.show()
+            self._new_link_dialog.raise_()
+            self._new_link_dialog.activateWindow()
+            self.statusBar().showMessage(
+                "열려 있는 자식 링크 도구 창에서 설정을 마치거나 취소하세요.",
+                5000,
+            )
+            return
+        mechanism_preset = self._pending_mechanism_preset
+        self._pending_mechanism_preset = None
+        part_ids = self._selected_part_ids()
+        if not part_ids:
+            self.left_tabs.setCurrentIndex(0)
+            self.statusBar().showMessage(
+                "먼저 3D 또는 형상 목록에서 핸들처럼 움직일 자식 형상을 선택하세요.",
+                10000,
+            )
+            return
+        parent = (
+            self.current_link
+            if self.current_link in self.project.links
+            else self.project.root_link
+        )
+        if (
+            mechanism_preset is not None
+            and mechanism_preset.get("parent") in self.project.links
+        ):
+            parent = str(mechanism_preset["parent"])
+        if parent not in self.project.links:
+            QMessageBox.information(
+                self,
+                "Base 링크 필요",
+                "먼저 '전체 새로 시작'으로 Base 링크를 만드세요.",
+            )
+            return
         dialog = NewLinkDialog(
             self.project.links.keys(),
             default_parent=parent,
@@ -1349,8 +1750,11 @@ class MainWindow(QMainWindow):
             lock_parent=False,
             parent=self,
         )
-        previous_camera = self.viewport.capture_camera_state()
+        if mechanism_preset is not None:
+            dialog.apply_mechanism_preset(mechanism_preset)
         previous_selection = list(part_ids)
+        project_at_start = self.project
+        self._new_link_dialog = dialog
 
         def preview_parent(parent_name: str) -> None:
             self._preview_new_link_candidates(dialog, parent_name, part_ids)
@@ -1367,19 +1771,114 @@ class MainWindow(QMainWindow):
                 part_ids,
             )
 
+        def toggle_axis_edit(enabled: bool) -> None:
+            if enabled:
+                preview_motion()
+                self.statusBar().showMessage(
+                    "노란 축의 양 끝점을 끌어 방향을, 선 가운데를 끌어 관절 중심을 조정하세요."
+                )
+            else:
+                self.viewport.clear_axis_edit_handles()
+
+        def axis_handle_changed(
+            origin_world: Iterable[float],
+            direction_world: Iterable[float],
+        ) -> None:
+            if self.project is not project_at_start:
+                return
+            parent_name = dialog.parent_combo.currentText()
+            if parent_name not in self.project.links:
+                return
+            try:
+                parent_current = self.project.forward_kinematics()[parent_name]
+                inverse_parent = np.linalg.inv(parent_current)
+                origin_parent = apply_transform(
+                    np.asarray(tuple(origin_world), dtype=float).reshape(1, 3),
+                    inverse_parent,
+                )[0]
+                axis_parent = (
+                    inverse_parent[:3, :3]
+                    @ np.asarray(tuple(direction_world), dtype=float)
+                )
+            except (KeyError, ValueError, np.linalg.LinAlgError):
+                return
+            dialog.set_axis_from_3d(origin_parent, axis_parent)
+
         dialog.parentPreviewRequested.connect(preview_parent)
         dialog.axisPreviewRequested.connect(preview_axis)
         dialog.motionPreviewRequested.connect(preview_motion)
-        accepted = False
+        dialog.axisEditModeChanged.connect(toggle_axis_edit)
+        self.viewport.candidateAxisPicked.connect(dialog.select_candidate_axis)
+        self.viewport.axisHandlesChanged.connect(axis_handle_changed)
+        dialog.finished.connect(
+            lambda result: self._finish_new_link_dialog(
+                dialog,
+                result,
+                part_ids,
+                previous_selection,
+                project_at_start,
+                axis_handle_changed,
+                mechanism_preset,
+            )
+        )
+        self._rebuild_viewport(part_ids, include_assigned=True)
+        preview_parent(parent)
+        dialog.show()
+        dialog.fit_to_available_screen()
+        if isinstance(dialog, QDialog):
+            top_right = self.mapToGlobal(self.rect().topRight())
+            screen = self.screen() or QApplication.primaryScreen()
+            if screen is not None:
+                available = screen.availableGeometry()
+                target_x = top_right.x() - dialog.width() - 24
+                target_y = top_right.y() + 72
+                dialog.move(
+                    max(
+                        available.left() + 12,
+                        min(target_x, available.right() - dialog.width() - 12),
+                    ),
+                    max(
+                        available.top() + 12,
+                        min(target_y, available.bottom() - dialog.height() - 12),
+                    ),
+                )
+        dialog.raise_()
+        dialog.activateWindow()
+        self.statusBar().showMessage(
+            "도구 창을 열어 둔 채 3D 뷰를 움직이세요. A/B/C 선을 직접 클릭해 축을 고를 수 있습니다."
+        )
+
+    def _finish_new_link_dialog(
+        self,
+        dialog: NewLinkDialog,
+        result: int,
+        part_ids: Iterable[str],
+        previous_selection: Iterable[str],
+        project_at_start: RobotProject,
+        axis_handle_changed: Callable[[Iterable[float], Iterable[float]], None],
+        mechanism_preset: dict[str, Any] | None = None,
+    ) -> None:
+        """Close a modeless joint-authoring session and optionally create it."""
+
+        if dialog is not self._new_link_dialog:
+            return
+        self._new_link_dialog = None
         try:
-            self._rebuild_viewport(part_ids, include_assigned=True)
-            preview_parent(parent)
-            accepted = dialog.exec() == QDialog.DialogCode.Accepted
-        finally:
-            self.viewport.clear_candidate_axes(render=False)
-            self._rebuild_viewport(previous_selection)
-            self.viewport.restore_camera_state(previous_camera)
-        if not accepted:
+            self.viewport.candidateAxisPicked.disconnect(dialog.select_candidate_axis)
+        except (RuntimeError, TypeError):
+            pass
+        try:
+            self.viewport.axisHandlesChanged.disconnect(axis_handle_changed)
+        except (RuntimeError, TypeError):
+            pass
+        self.viewport.clear_axis_edit_handles(render=False)
+        self.viewport.clear_candidate_axes(render=False)
+        self._rebuild_viewport(previous_selection)
+        dialog.deleteLater()
+        if (
+            result != QDialog.DialogCode.Accepted
+            or self.project is not project_at_start
+        ):
             return
         try:
             values = dialog.values()
@@ -1390,6 +1889,42 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "링크 설정 오류", "링크 이름을 입력하세요.")
             return
         link_name = sanitize_name(values["link_name"], "moving_link")
+        joint_options: dict[str, Any] = {}
+        if mechanism_preset is not None:
+            joint_options.update(
+                {
+                    "effort": float(mechanism_preset.get("effort", 100.0)),
+                    "velocity": float(mechanism_preset.get("velocity", 0.25)),
+                    "damping": float(mechanism_preset.get("damping", 0.0)),
+                    "friction": float(mechanism_preset.get("friction", 0.0)),
+                }
+            )
+            source_mode = mechanism_preset.get("source_mode")
+            source_joint = mechanism_preset.get("source_joint")
+            if source_mode == "mimic" and source_joint:
+                joint_options.update(
+                    {
+                        "mimic_joint": str(source_joint),
+                        "mimic_auto": True,
+                        "mimic_reverse": bool(mechanism_preset.get("reverse", False)),
+                    }
+                )
+            elif source_mode == "drive" and source_joint:
+                joint_options.update(
+                    {
+                        "drive_source_joint": str(source_joint),
+                        "drive_max_velocity": (
+                            float(mechanism_preset.get("max_rpm", 60.0))
+                            * 2.0
+                            * math.pi
+                            / 60.0
+                        ),
+                        "drive_deadband": float(
+                            mechanism_preset.get("deadband", 0.03)
+                        ),
+                        "drive_reverse": bool(mechanism_preset.get("reverse", False)),
+                    }
+                )
         created = self._create_moving_link(
             link_name,
             part_ids,
@@ -1401,9 +1936,52 @@ class MainWindow(QMainWindow):
             lower=values["lower"],
             upper=values["upper"],
             allow_empty=False,
+            joint_options=joint_options,
         )
+        if created and mechanism_preset is not None:
+            self._record_mechanism_metadata(
+                mechanism_preset,
+                link_name=link_name,
+                joint_name=f"{link_name}_joint",
+            )
+            self._mark_dirty()
         if created:
             self.left_tabs.setCurrentIndex(1)
+
+    def _record_mechanism_metadata(
+        self,
+        values: dict[str, Any],
+        *,
+        link_name: str,
+        joint_name: str,
+    ) -> None:
+        if self.project is None:
+            return
+        mechanisms = self.project.metadata.get("mechanisms")
+        if not isinstance(mechanisms, list):
+            mechanisms = []
+            self.project.metadata["mechanisms"] = mechanisms
+        mechanisms[:] = [
+            item
+            for item in mechanisms
+            if not isinstance(item, dict) or item.get("joint") != joint_name
+        ]
+        mechanisms.append(
+            {
+                "type": str(values.get("preset") or "custom"),
+                "title": str(values.get("title") or "대표 기구"),
+                "link": link_name,
+                "joint": joint_name,
+                "parent": str(values.get("parent") or ""),
+                "state_0": str(values.get("state_0") or "상태 0"),
+                "state_1": str(values.get("state_1") or "상태 1"),
+                "simulation_role": str(values.get("simulation_role") or "position"),
+                "source_joint": values.get("source_joint"),
+                "reverse": bool(values.get("reverse", False)),
+                "max_rpm": float(values.get("max_rpm", 0.0)),
+                "deadband": float(values.get("deadband", 0.0)),
+            }
+        )
 
     def _preview_new_link_candidates(
         self,
@@ -1439,36 +2017,84 @@ class MainWindow(QMainWindow):
         except (KeyError, ValueError, np.linalg.LinAlgError):
             return
 
+        child_parts = [self.project.parts[part_id] for part_id in selected_ids]
+        parent_parts = [self.project.parts[part_id] for part_id in context_ids]
+        cad_candidates = _cad_joint_axis_candidates(child_parts, parent_parts)
         child_vertices = [
             self.project.parts[part_id].vertices_zero
             for part_id in selected_ids
             if len(self.project.parts[part_id].vertices_zero)
         ]
-        world_candidates = _geometry_principal_axes(child_vertices)
         try:
             inverse_parent_rotation = np.linalg.inv(parent_zero[:3, :3])
         except np.linalg.LinAlgError:
             inverse_parent_rotation = parent_zero[:3, :3].T
-        local_candidates = {
-            name: inverse_parent_rotation @ direction
-            for name, direction in world_candidates.items()
-        }
-        if not local_candidates:
+        local_origins: dict[str, np.ndarray] = {}
+        descriptions: dict[str, str] = {}
+        if cad_candidates:
+            local_candidates: dict[str, np.ndarray] = {}
+            for name, candidate in zip("ABC", cad_candidates, strict=False):
+                local_candidates[name] = (
+                    inverse_parent_rotation @ candidate["direction"]
+                )
+                local_origins[name] = apply_transform(
+                    candidate["origin"].reshape(1, 3),
+                    np.linalg.inv(parent_zero),
+                )[0]
+                child_diameter = candidate["child_radius"] * 2000.0
+                parent_radius = candidate["parent_radius"]
+                if candidate["shared"] and parent_radius is not None:
+                    parent_diameter = parent_radius * 2000.0
+                    if abs(parent_diameter - child_diameter) < 0.2:
+                        size_text = f"공통 Ø{child_diameter:.1f} mm"
+                    else:
+                        size_text = (
+                            f"부모 Ø{parent_diameter:.1f} / 자식 Ø{child_diameter:.1f} mm"
+                        )
+                    descriptions[name] = f"{name}  STEP 결합 원통\n{size_text}"
+                else:
+                    descriptions[name] = (
+                        f"{name}  자식 원통면\nØ{child_diameter:.1f} mm"
+                    )
+            center_parent = local_origins["A"].copy()
+            recommended = "A"
+        else:
+            world_candidates = _geometry_principal_axes(child_vertices)
             local_candidates = {
-                name: np.eye(3, dtype=float)[:, index]
-                for index, name in enumerate("XYZ")
+                name: inverse_parent_rotation @ direction
+                for name, direction in world_candidates.items()
+            }
+            if not local_candidates:
+                local_candidates = {
+                    name: np.eye(3, dtype=float)[:, index]
+                    for index, name in enumerate("XYZ")
+                }
+            recommended = None
+            descriptions = {
+                "A": "A  BBox 가로 장축\n가장 긴 이동 방향",
+                "B": "B  BBox 세로축\n두 번째 방향",
+                "C": "C  BBox 두께축\n가장 얇은 방향",
             }
 
         dialog.set_candidate_origin(center_parent)
-        dialog.set_axis_candidates(local_candidates)
+        dialog.set_axis_candidates(
+            local_candidates,
+            origins=local_origins,
+            descriptions=descriptions,
+            recommended=recommended,
+        )
         self.viewport.clear_candidate_axes(render=False)
         self.viewport.set_isolated_parts([*context_ids, *selected_ids])
         self.viewport.set_selected(selected_ids)
         self._preview_new_link_motion(dialog, parent, selected_ids)
         self.viewport.frame_all()
         self.statusBar().showMessage(
-            "자식 형상의 A 장축 · B 중간축 · C 두께/노멀 축을 계산했습니다. "
-            "회전 관절을 고른 뒤 미리보기 슬라이더로 확인하세요."
+            (
+                "STEP의 부모·자식 원통면에서 실제 결합축 후보를 찾았습니다. "
+                if cad_candidates
+                else "STEP 원통 결합축이 없어 자식 형상의 통계 주축을 표시했습니다. "
+            )
+            + "회전 미리보기로 확인하고 필요하면 3D 축 편집을 사용하세요."
         )
 
     def _new_link_axis_length(
@@ -1549,18 +2175,41 @@ class MainWindow(QMainWindow):
             {part_id: delta for part_id in selected_ids}
         )
         local_candidates = dialog.candidate_axes()
+        local_candidate_origins = dialog.candidate_origins()
         directions = {
             name: parent_current[:3, :3] @ direction
             for name, direction in local_candidates.items()
         }
+        candidate_origins = {
+            name: apply_transform(origin.reshape(1, 3), parent_current)[0]
+            for name, origin in local_candidate_origins.items()
+        }
         if directions:
-            selected_name = dialog.matching_candidate(axis) or next(iter(directions))
+            selected_name = dialog.matching_candidate(axis) or ""
+            axis_length = self._new_link_axis_length(parent, selected_ids)
             self.viewport.set_candidate_axes(
                 center_current,
                 directions,
-                self._new_link_axis_length(parent, selected_ids),
+                axis_length,
                 selected=selected_name,
+                selected_direction=(
+                    parent_current[:3, :3] @ axis
+                    if axis_norm > 1.0e-12 and kind != "fixed"
+                    else None
+                ),
+                rotational=kind in {"revolute", "continuous"},
+                candidate_origins=candidate_origins,
             )
+            if dialog.axis_edit_button.isChecked() and axis_norm > 1.0e-12:
+                self.viewport.set_axis_edit_handles(
+                    center_current,
+                    parent_current[:3, :3] @ axis,
+                    axis_length,
+                )
+            else:
+                self.viewport.clear_axis_edit_handles(render=False)
+        else:
+            self.viewport.clear_axis_edit_handles(render=False)
 
     def _create_moving_link(
         self,
@@ -1575,6 +2224,7 @@ class MainWindow(QMainWindow):
         lower: float | None = None,
         upper: float | None = None,
         allow_empty: bool = False,
+        joint_options: dict[str, Any] | None = None,
     ) -> bool:
         if self.project is None:
             return False
@@ -1667,6 +2317,7 @@ class MainWindow(QMainWindow):
         previous_owners = {
             part_id: self.project.parts[part_id].link_name for part_id in identifiers
         }
+        options = dict(joint_options or {})
         candidate_joint = JointSpec(
             name=safe_joint_name,
             type=joint_type,
@@ -1676,8 +2327,11 @@ class MainWindow(QMainWindow):
             axis=axis,
             lower=lower,
             upper=upper,
-            effort=100.0,
-            velocity=0.25,
+            effort=float(options.pop("effort", 100.0)),
+            velocity=float(options.pop("velocity", 0.25)),
+            damping=float(options.pop("damping", 0.0)),
+            friction=float(options.pop("friction", 0.0)),
+            **options,
         )
         self.project.create_link(link_name, identifiers)
         self.project.joints.append(candidate_joint)
@@ -1839,12 +2493,29 @@ class MainWindow(QMainWindow):
         self.delete_current_link()
 
     def _after_topology_change(self, link_name: str) -> None:
+        self._prune_mechanism_metadata()
         self.current_link = link_name
         incoming = self.project.joint_for_child(link_name) if self.project else None
         self.current_joint = incoming.name if incoming else None
         self._mark_dirty()
         self._rebuild_all(preserve_selection=False)
         self._select_link_item(link_name)
+
+    def _prune_mechanism_metadata(self) -> None:
+        if self.project is None:
+            return
+        mechanisms = self.project.metadata.get("mechanisms")
+        if not isinstance(mechanisms, list):
+            return
+        valid_links = set(self.project.links)
+        valid_joints = {joint.name for joint in self.project.joints}
+        mechanisms[:] = [
+            item
+            for item in mechanisms
+            if isinstance(item, dict)
+            and item.get("link") in valid_links
+            and item.get("joint") in valid_joints
+        ]
 
     # ---------- joint editing and preview ----------
     def apply_joint_values(self, values: dict[str, Any]) -> None:
@@ -1870,14 +2541,66 @@ class MainWindow(QMainWindow):
         replacement.lower = None if replacement.type == "continuous" else float(values["lower"])
         replacement.upper = None if replacement.type == "continuous" else float(values["upper"])
         replacement.position = replacement.clamp(float(values["position"]))
+        replacement.effort = float(values.get("effort", replacement.effort))
+        replacement.velocity = float(values.get("velocity", replacement.velocity))
+        replacement.damping = float(values.get("damping", replacement.damping))
+        replacement.friction = float(values.get("friction", replacement.friction))
+        replacement.mimic_joint = values.get("mimic_joint")
+        replacement.mimic_auto = bool(values.get("mimic_auto", False))
+        replacement.mimic_reverse = bool(values.get("mimic_reverse", False))
+        replacement.mimic_multiplier = float(values.get("mimic_multiplier", 1.0))
+        replacement.mimic_offset = float(values.get("mimic_offset", 0.0))
+        replacement.drive_source_joint = values.get("drive_source_joint")
+        replacement.drive_max_velocity = float(
+            values.get("drive_max_velocity", 2.0 * math.pi)
+        )
+        replacement.drive_deadband = float(values.get("drive_deadband", 0.03))
+        replacement.drive_reverse = bool(values.get("drive_reverse", False))
         if replacement.type == "fixed":
             replacement.lower = replacement.upper = replacement.position = 0.0
+            replacement.mimic_joint = None
+            replacement.mimic_auto = False
+            replacement.mimic_reverse = False
+        if replacement.type != "continuous":
+            replacement.drive_source_joint = None
+            replacement.drive_reverse = False
+        renamed_dependents = [
+            joint
+            for joint in self.project.joints
+            if joint is not old_joint and joint.mimic_joint == old_joint.name
+        ]
+        renamed_drive_targets = [
+            joint
+            for joint in self.project.joints
+            if joint is not old_joint
+            and joint.drive_source_joint == old_joint.name
+        ]
         self.project.joints[index] = replacement
+        if name != old_joint.name:
+            for dependent in renamed_dependents:
+                dependent.mimic_joint = name
+            for target in renamed_drive_targets:
+                target.drive_source_joint = name
         errors = self.project.validate(check_names=False)
         if errors:
             self.project.joints[index] = old_joint
+            for dependent in renamed_dependents:
+                dependent.mimic_joint = old_joint.name
+            for target in renamed_drive_targets:
+                target.drive_source_joint = old_joint.name
             QMessageBox.warning(self, "관절 설정 오류", "\n".join(errors))
             return
+        if name != old_joint.name:
+            mechanisms = self.project.metadata.get("mechanisms")
+            if isinstance(mechanisms, list):
+                for item in mechanisms:
+                    if not isinstance(item, dict):
+                        continue
+                    if item.get("joint") == old_joint.name:
+                        item["joint"] = name
+                    if item.get("source_joint") == old_joint.name:
+                        item["source_joint"] = name
+        self.project.apply_mimic_positions()
         self.current_joint = replacement.name
         self.current_link = replacement.child
         self._mark_dirty()
@@ -1948,7 +2671,7 @@ class MainWindow(QMainWindow):
             self.viewport.set_axis_marker(
                 marker_origin,
                 direction_world,
-                self._scene_scale * (0.28 if rotational else 0.18),
+                self._scene_scale * (0.20 if rotational else 0.10),
                 bidirectional=rotational,
             )
         except (KeyError, ValueError, np.linalg.LinAlgError):
@@ -1974,6 +2697,7 @@ class MainWindow(QMainWindow):
             self.clear_selection_action,
             self.part_colors_action,
             self.hide_assigned_action,
+            self.mechanism_wizard_action,
         ):
             action.setEnabled(enabled)
         for widget in (
@@ -1982,6 +2706,7 @@ class MainWindow(QMainWindow):
             self.to_base_button,
             self.new_tree_button,
             self.add_child_button,
+            self.mechanism_wizard_button,
             self.assign_current_tree_button,
             self.unassign_current_tree_button,
             self.assigned_visibility_check,
@@ -2006,6 +2731,8 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802 - Qt API
         self._stop_demo_animation(restore=True)
+        if self._new_link_dialog is not None:
+            self._new_link_dialog.reject()
         if self._workers or self._progress is not None:
             QMessageBox.information(
                 self,

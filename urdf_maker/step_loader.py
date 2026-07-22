@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import hashlib
+import math
 from pathlib import Path
 from time import perf_counter
 from typing import Any, Callable, Iterable, Sequence
@@ -64,11 +65,13 @@ class StepPart:
     triangles: np.ndarray
     color: tuple[float, float, float, float] | None = None
     source_label: str = ""
+    feature_axes: list[dict[str, Any]] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         self.id = str(self.id)
         self.name = str(self.name)
         self.source_label = str(self.source_label)
+        self.feature_axes = [dict(item) for item in self.feature_axes]
         vertices = np.asarray(self.vertices, dtype=np.float64)
         if vertices.size == 0:
             vertices = np.empty((0, 3), dtype=np.float64)
@@ -126,6 +129,7 @@ class StepPart:
             name=self.name,
             vertices_zero=self.vertices,
             triangles=self.triangles,
+            feature_axes=self.feature_axes,
             **kwargs,
         )
 
@@ -181,20 +185,24 @@ class _OcpApi:
     TDataStd_Name: Any
     TopLoc_Location: Any
     BRepMesh_IncrementalMesh: Any
+    BRepAdaptor_Surface: Any
     BRep_Tool: Any
     TopExp_Explorer: Any
     TopoDS: Any
     TopAbs_FACE: Any
     TopAbs_SOLID: Any
     TopAbs_REVERSED: Any
+    GeomAbs_Cylinder: Any
     Quantity_ColorRGBA: Any
 
 
 def _import_ocp() -> _OcpApi:
     try:
         from OCP.BRep import BRep_Tool
+        from OCP.BRepAdaptor import BRepAdaptor_Surface
         from OCP.BRepMesh import BRepMesh_IncrementalMesh
         from OCP.IFSelect import IFSelect_RetDone
+        from OCP.GeomAbs import GeomAbs_Cylinder
         from OCP.Quantity import Quantity_ColorRGBA
         from OCP.STEPCAFControl import STEPCAFControl_Reader
         from OCP.STEPControl import STEPControl_Reader
@@ -368,6 +376,73 @@ def _mesh_shape(
     return np.vstack(vertex_chunks), np.vstack(triangle_chunks)
 
 
+def _cylindrical_feature_axes(
+    api: _OcpApi,
+    shape: Any,
+    *,
+    occurrence_location: Any,
+    scale_to_m: float,
+) -> list[dict[str, Any]]:
+    """Extract exact cylinder centerlines before STEP topology is discarded."""
+
+    occurrence_matrix = _trsf_matrix(occurrence_location)
+    result: list[dict[str, Any]] = []
+    explorer = api.TopExp_Explorer(shape, api.TopAbs_FACE)
+    while explorer.More():
+        face = api.TopoDS.Face_s(explorer.Current())
+        try:
+            surface = api.BRepAdaptor_Surface(face, True)
+            if surface.GetType() != api.GeomAbs_Cylinder:
+                explorer.Next()
+                continue
+            cylinder = surface.Cylinder()
+            axis = cylinder.Axis()
+            location = axis.Location()
+            direction = axis.Direction()
+            origin_local = np.asarray(
+                (location.X(), location.Y(), location.Z()),
+                dtype=np.float64,
+            )
+            direction_local = np.asarray(
+                (direction.X(), direction.Y(), direction.Z()),
+                dtype=np.float64,
+            )
+            first_v = float(surface.FirstVParameter())
+            last_v = float(surface.LastVParameter())
+            if (
+                math.isfinite(first_v)
+                and math.isfinite(last_v)
+                and abs(first_v) < 1.0e12
+                and abs(last_v) < 1.0e12
+            ):
+                origin_local = (
+                    origin_local
+                    + direction_local * ((first_v + last_v) * 0.5)
+                )
+                axial_length = abs(last_v - first_v) * scale_to_m
+            else:
+                axial_length = 0.0
+            origin_world = _transform_points(
+                origin_local.reshape(1, 3),
+                occurrence_matrix,
+            )[0] * scale_to_m
+            direction_world = occurrence_matrix[:3, :3] @ direction_local
+            direction_world /= np.linalg.norm(direction_world)
+            result.append(
+                {
+                    "kind": "cylinder",
+                    "origin": origin_world.tolist(),
+                    "direction": direction_world.tolist(),
+                    "radius": float(cylinder.Radius()) * scale_to_m,
+                    "length": float(axial_length),
+                }
+            )
+        except (RuntimeError, ValueError, np.linalg.LinAlgError):
+            pass
+        explorer.Next()
+    return result
+
+
 def _label_color(api: _OcpApi, color_tool: Any, labels: Iterable[Any]) -> tuple | None:
     color_types = (
         api.XCAFDoc_ColorType.XCAFDoc_ColorSurf,
@@ -530,6 +605,15 @@ def _load_xcaf(
         if not len(triangles):
             warnings.append(f"Skipped {name!r}: shape produced no triangles")
             continue
+        try:
+            feature_axes = _cylindrical_feature_axes(
+                api,
+                definition_shape,
+                occurrence_location=location,
+                scale_to_m=scale_to_m,
+            )
+        except Exception:
+            feature_axes = []
         identifier = _stable_part_id(source_label, used_part_ids)
         part = StepPart(
             id=identifier,
@@ -538,6 +622,7 @@ def _load_xcaf(
             triangles=triangles,
             color=_label_color(api, color_tool, (occurrence, definition)),
             source_label=source_label,
+            feature_axes=feature_axes,
         )
         parts.append(part)
         occurrences.append(
@@ -642,6 +727,15 @@ def _load_fallback(
             warnings.append(f"Skipped {name!r}: shape produced no triangles")
             continue
         source_label = f"root:{root_index}/solid:{solid_index}"
+        try:
+            feature_axes = _cylindrical_feature_axes(
+                api,
+                shape,
+                occurrence_location=api.TopLoc_Location(),
+                scale_to_m=scale_to_m,
+            )
+        except Exception:
+            feature_axes = []
         parts.append(
             StepPart(
                 id=_stable_part_id(source_label, used_part_ids),
@@ -649,6 +743,7 @@ def _load_fallback(
                 vertices=vertices,
                 triangles=triangles,
                 source_label=source_label,
+                feature_axes=feature_axes,
             )
         )
     if progress is not None:

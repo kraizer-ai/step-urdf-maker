@@ -1,5 +1,7 @@
+import json
 import struct
 from pathlib import Path
+import math
 import tempfile
 import unittest
 import xml.etree.ElementTree as ET
@@ -142,7 +144,6 @@ class UrdfLoadTests(unittest.TestCase):
   </link>
   <link name="tip"/>
   <joint name="fixed" type="fixed"><parent link="base"/><child link="tip"/>
-    <mimic joint="other"/>
   </joint>
   <transmission name="drive"/>
 </robot>""",
@@ -152,7 +153,34 @@ class UrdfLoadTests(unittest.TestCase):
             warnings = "\n".join(project.metadata["warnings"])
             self.assertIn("inertial", warnings)
             self.assertIn("collision", warnings)
-            self.assertIn("mimic", warnings)
+            self.assertIn("transmission", warnings)
+
+    def test_loads_mimic_joint_without_discard_warning(self):
+        with tempfile.TemporaryDirectory() as directory:
+            urdf = Path(directory) / "mimic.urdf"
+            urdf.write_text(
+                """<robot name="mimic_robot">
+  <link name="base"/><link name="handle"/><link name="axle"/>
+  <joint name="handle_joint" type="revolute">
+    <parent link="base"/><child link="handle"/><axis xyz="0 0 1"/>
+    <limit lower="-3.141592653589793" upper="3.141592653589793" effort="1" velocity="1"/>
+  </joint>
+  <joint name="axle_joint" type="prismatic">
+    <parent link="base"/><child link="axle"/><axis xyz="1 0 0"/>
+    <limit lower="-0.05" upper="0.05" effort="1" velocity="1"/>
+    <mimic joint="handle_joint" multiplier="0.015915494309" offset="0"/>
+  </joint>
+</robot>""",
+                encoding="utf-8",
+            )
+
+            project = load_urdf(urdf, strict=True)
+
+            mimic = project.joint("axle_joint")
+            self.assertEqual(mimic.mimic_joint, "handle_joint")
+            self.assertAlmostEqual(mimic.mimic_multiplier, 0.015915494309)
+            self.assertFalse(mimic.mimic_auto)
+            self.assertNotIn("mimic", "\n".join(project.metadata["warnings"]))
 
 
 class UrdfExportTests(unittest.TestCase):
@@ -214,6 +242,86 @@ class UrdfExportTests(unittest.TestCase):
             loaded_finger = loaded.parts[loaded.links["finger_link"].part_ids[0]]
             np.testing.assert_allclose(loaded_finger.vertices_zero, finger_world, atol=1e-7)
             self.assertEqual(loaded.joint("finger_slide").lower, -0.1)
+
+    def test_exports_auto_mimic_as_standard_multiplier_and_offset(self):
+        with tempfile.TemporaryDirectory() as directory:
+            project = RobotProject(
+                "steering",
+                links=[LinkSpec("base"), LinkSpec("handle"), LinkSpec("axle")],
+                joints=[
+                    JointSpec(
+                        "handle_joint",
+                        "revolute",
+                        "base",
+                        "handle",
+                        lower=-math.pi,
+                        upper=math.pi,
+                    ),
+                    JointSpec(
+                        "axle_joint",
+                        "prismatic",
+                        "base",
+                        "axle",
+                        lower=-0.05,
+                        upper=0.05,
+                        mimic_joint="handle_joint",
+                        mimic_auto=True,
+                        mimic_reverse=True,
+                    ),
+                ],
+                root_link="base",
+            )
+            output = export_urdf(project, Path(directory) / "output")
+            mimic = ET.parse(output).find("joint[@name='axle_joint']/mimic")
+
+            self.assertIsNotNone(mimic)
+            self.assertEqual(mimic.get("joint"), "handle_joint")
+            self.assertAlmostEqual(float(mimic.get("multiplier")), -0.05 / math.pi)
+            self.assertAlmostEqual(float(mimic.get("offset")), 0.0)
+
+    def test_exports_joint_dynamics_and_mechanism_manifest(self):
+        with tempfile.TemporaryDirectory() as directory:
+            project = RobotProject(
+                "conveyor",
+                links=[LinkSpec("base"), LinkSpec("roller")],
+                joints=[
+                    JointSpec(
+                        "roller_joint",
+                        "continuous",
+                        "base",
+                        "roller",
+                        damping=0.02,
+                        friction=0.03,
+                    )
+                ],
+                root_link="base",
+                metadata={
+                    "mechanisms": [
+                        {
+                            "type": "conveyor",
+                            "link": "roller",
+                            "joint": "roller_joint",
+                            "simulation_role": "conveyor_velocity",
+                        }
+                    ]
+                },
+            )
+            package = Path(directory) / "output"
+            output = export_urdf(project, package)
+            dynamics = ET.parse(output).find("joint[@name='roller_joint']/dynamics")
+
+            self.assertIsNotNone(dynamics)
+            self.assertEqual(float(dynamics.get("damping")), 0.02)
+            self.assertEqual(float(dynamics.get("friction")), 0.03)
+            manifest = json.loads(
+                (package / "config" / "mechanisms.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(manifest["format"], "step-urdf-maker-mechanisms")
+            self.assertEqual(manifest["mechanisms"][0]["type"], "conveyor")
+
+            loaded = load_urdf(output, strict=True)
+            self.assertEqual(loaded.joint("roller_joint").damping, 0.02)
+            self.assertEqual(loaded.joint("roller_joint").friction, 0.03)
 
 
 if __name__ == "__main__":

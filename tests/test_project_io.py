@@ -57,6 +57,41 @@ def test_project_round_trip_config(tmp_path: Path) -> None:
     assert fresh.validate(check_names=False) == []
 
 
+def test_joint_physics_and_mechanism_metadata_survive_project_round_trip(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source.step"
+    source.write_text("dummy", encoding="utf-8")
+    original = _project(source)
+    joint = original.joint("moving_joint")
+    joint.effort = 250.0
+    joint.velocity = 0.4
+    joint.damping = 1.25
+    joint.friction = 0.15
+    original.metadata["mechanisms"] = [
+        {
+            "type": "slider",
+            "link": "moving_link",
+            "joint": "moving_joint",
+            "state_0": "수축",
+            "state_1": "확장",
+        }
+    ]
+
+    path = save_project(original, tmp_path / "physics.urdfmaker.json")
+    payload, _, _ = load_project_config(path)
+    fresh = _project(source)
+    warnings = apply_project_config(fresh, payload)
+
+    assert warnings == []
+    restored = fresh.joint("moving_joint")
+    assert restored.effort == 250.0
+    assert restored.velocity == 0.4
+    assert restored.damping == 1.25
+    assert restored.friction == 0.15
+    assert fresh.metadata["mechanisms"][0]["type"] == "slider"
+
+
 def test_project_file_is_human_readable(tmp_path: Path) -> None:
     source = tmp_path / "source.urdf"
     source.write_text("<robot name='r'/>", encoding="utf-8")
@@ -99,3 +134,79 @@ def test_explicitly_unassigned_part_survives_project_round_trip(tmp_path: Path) 
     assert warnings == []
     assert fresh.parts["part"].link_name is None
     assert "part" not in fresh.links["base_link"].part_ids
+
+
+def test_mimic_settings_survive_project_round_trip(tmp_path: Path) -> None:
+    source = tmp_path / "source.step"
+    source.write_text("dummy", encoding="utf-8")
+    original = _project(source)
+    original.links["handle_link"] = LinkSpec("handle_link")
+    original.joints.insert(
+        0,
+        JointSpec(
+            "handle_joint",
+            "revolute",
+            "base_link",
+            "handle_link",
+            lower=-np.pi,
+            upper=np.pi,
+        ),
+    )
+    target = original.joint("moving_joint")
+    target.mimic_joint = "handle_joint"
+    target.mimic_auto = True
+    target.mimic_reverse = True
+
+    path = save_project(original, tmp_path / "mimic.urdfmaker.json")
+    payload, _, _ = load_project_config(path)
+    fresh = _project(source)
+    warnings = apply_project_config(fresh, payload)
+
+    assert warnings == []
+    restored = fresh.joint("moving_joint")
+    assert restored.mimic_joint == "handle_joint"
+    assert restored.mimic_auto is True
+    assert restored.mimic_reverse is True
+    assert payload["version"] == 4
+
+
+def test_lever_speed_drive_settings_survive_project_round_trip(tmp_path: Path) -> None:
+    source = tmp_path / "source.step"
+    source.write_text("dummy", encoding="utf-8")
+    original = _project(source)
+    original.links["lever_link"] = LinkSpec("lever_link")
+    original.links["wheel_link"] = LinkSpec("wheel_link")
+    original.joints.extend(
+        [
+            JointSpec(
+                "direction_lever",
+                "revolute",
+                "base_link",
+                "lever_link",
+                lower=-0.4,
+                upper=0.4,
+            ),
+            JointSpec(
+                "drive_wheel",
+                "continuous",
+                "base_link",
+                "wheel_link",
+                drive_source_joint="direction_lever",
+                drive_max_velocity=8.0,
+                drive_deadband=0.07,
+                drive_reverse=True,
+            ),
+        ]
+    )
+
+    path = save_project(original, tmp_path / "drive.urdfmaker.json")
+    payload, _, _ = load_project_config(path)
+    fresh = _project(source)
+    warnings = apply_project_config(fresh, payload)
+
+    assert warnings == []
+    restored = fresh.joint("drive_wheel")
+    assert restored.drive_source_joint == "direction_lever"
+    assert restored.drive_max_velocity == 8.0
+    assert restored.drive_deadband == 0.07
+    assert restored.drive_reverse is True

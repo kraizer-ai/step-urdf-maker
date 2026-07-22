@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 
 import numpy as np
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication
 
 from urdf_maker.model import JointSpec
@@ -33,10 +34,17 @@ def test_joint_editor_ignores_wheel_on_value_controls() -> None:
         editor.axis_editor.spins[0],
         editor.lower_spin,
         editor.upper_spin,
+        editor.effort_spin,
+        editor.velocity_spin,
+        editor.damping_spin,
+        editor.friction_spin,
         editor.position_spin,
         editor.step_spin,
         editor.position_slider,
         editor.state_spin,
+        editor.drive_source_combo,
+        editor.drive_max_rpm_spin,
+        editor.drive_deadband_spin,
     )
 
     for control in controls:
@@ -57,6 +65,34 @@ def test_continuous_joint_can_be_displayed() -> None:
     assert math.isclose(values["upper"], math.pi)
 
 
+def test_joint_editor_round_trips_simulation_physics_values() -> None:
+    _app()
+    editor = JointEditorWidget()
+    editor.set_link_names(["base", "slider"])
+    editor.set_joint(
+        JointSpec(
+            "slide",
+            "prismatic",
+            "base",
+            "slider",
+            lower=0.0,
+            upper=0.2,
+            effort=750.0,
+            velocity=0.15,
+            damping=2.5,
+            friction=0.4,
+        )
+    )
+
+    values = editor.current_values()
+
+    assert values["effort"] == 750.0
+    assert math.isclose(values["velocity"], 0.15)
+    assert values["damping"] == 2.5
+    assert values["friction"] == 0.4
+    assert editor.velocity_units.text() == "mm/s"
+
+
 def test_joint_editor_can_flip_axis_direction() -> None:
     _app()
     editor = JointEditorWidget()
@@ -73,12 +109,79 @@ def test_joint_editor_can_flip_axis_direction() -> None:
     np.testing.assert_allclose(previews[-1], (0.0, 0.0, -1.0))
 
 
+def test_joint_editor_configures_automatic_reversed_mimic() -> None:
+    _app()
+    source = JointSpec(
+        "handle_joint",
+        "revolute",
+        "base",
+        "handle",
+        lower=-math.pi,
+        upper=math.pi,
+    )
+    target = JointSpec(
+        "axle_joint",
+        "prismatic",
+        "base",
+        "axle",
+        lower=-0.05,
+        upper=0.05,
+    )
+    editor = JointEditorWidget()
+    editor.set_link_names(["base", "handle", "axle"])
+    editor.set_joint_specs([source, target])
+    editor.set_joint(target)
+
+    editor.mimic_enable.setChecked(True)
+    editor.mimic_source_combo.setCurrentText("handle_joint")
+    editor.mimic_reverse_check.setChecked(True)
+    values = editor.current_values()
+
+    assert values["mimic_joint"] == "handle_joint"
+    assert values["mimic_auto"] is True
+    assert values["mimic_reverse"] is True
+    assert not editor.preview_box.isEnabled()
+    assert "-180.000°" in editor.mimic_formula_label.text()
+    assert "50.000mm" in editor.mimic_formula_label.text()
+
+
 def test_floating_joint_disables_scalar_preview() -> None:
     _app()
     editor = JointEditorWidget()
     editor.set_link_names(["world", "object"])
     editor.set_joint(JointSpec("floating", "floating", "world", "object"))
     assert not editor.preview_box.isEnabled()
+
+
+def test_joint_editor_configures_direction_lever_speed_drive() -> None:
+    _app()
+    lever = JointSpec(
+        "direction_lever",
+        "revolute",
+        "base",
+        "lever",
+        lower=math.radians(-20.0),
+        upper=math.radians(20.0),
+    )
+    wheel = JointSpec("wheel_joint", "continuous", "base", "wheel")
+    editor = JointEditorWidget()
+    editor.set_link_names(["base", "lever", "wheel"])
+    editor.set_joint_specs([lever, wheel])
+    editor.set_joint(wheel)
+
+    editor.drive_enable.setChecked(True)
+    editor.drive_source_combo.setCurrentText("direction_lever")
+    editor.drive_max_rpm_spin.setValue(120.0)
+    editor.drive_deadband_spin.setValue(5.0)
+    editor.drive_reverse_check.setChecked(True)
+    values = editor.current_values()
+
+    assert values["drive_source_joint"] == "direction_lever"
+    assert math.isclose(values["drive_max_velocity"], 4.0 * math.pi)
+    assert math.isclose(values["drive_deadband"], 0.05)
+    assert values["drive_reverse"] is True
+    assert not editor.preview_box.isEnabled()
+    assert "중앙 (0.000°) → 정지" in editor.drive_formula_label.text()
 
 
 def test_switching_joint_updates_range_before_position() -> None:
@@ -194,6 +297,8 @@ def test_new_link_dialog_recommends_geometry_normal_and_previews_rotation() -> N
         default_parent="base_link",
         selected_count=1,
     )
+    assert not dialog.isModal()
+    assert dialog.windowModality() == Qt.WindowModality.NonModal
     dialog.set_axis_candidates(
         {
             "A": (1.0, 0.0, 0.0),
@@ -206,13 +311,51 @@ def test_new_link_dialog_recommends_geometry_normal_and_previews_rotation() -> N
     dialog.type_combo.setCurrentText("revolute")
     assert tuple(dialog.axis_editor.value()) == (0.0, 0.0, 1.0)
     assert dialog.matching_candidate((0.0, 0.0, -1.0)) == "C"
+    assert dialog.geometry_axis_buttons["C"].isChecked()
+    assert not dialog.geometry_axis_buttons["A"].isChecked()
+    assert dialog.advanced_axis_box.isHidden()
+    dialog.flip_axis_direction()
+    assert tuple(dialog.axis_editor.value()) == (0.0, 0.0, -1.0)
+    assert "반대 방향" in dialog.selected_axis_label.text()
+    assert dialog.geometry_axis_buttons["C"].isChecked()
+    dialog.lower_spin.setValue(-180.0)
+    dialog.upper_spin.setValue(180.0)
     dialog.preview_slider.setValue(100)
-    assert math.isclose(dialog.preview_position_si(), math.pi / 4.0)
-    assert dialog.preview_value_label.text() == "45°"
+    assert math.isclose(dialog.preview_position_si(), math.pi)
+    assert dialog.preview_value_label.text() == "180°"
+    dialog.preview_slider.setValue(-100)
+    assert math.isclose(dialog.preview_position_si(), -math.pi)
+    assert dialog.preview_value_label.text() == "-180°"
+    dialog.reset_motion_preview()
+    assert dialog.preview_slider.value() == 0
+    assert math.isclose(dialog.preview_position_si(), 0.0)
+    assert dialog.preview_value_label.text() == "0°"
 
     dialog.set_candidate_origin((0.4, -0.2, 0.1))
     dialog.origin_editor.setValue((410.0, -190.0, 120.0))
     np.testing.assert_allclose(dialog.values()["origin_xyz"], (0.41, -0.19, 0.12))
+    dialog.reset_candidate_origin()
+    np.testing.assert_allclose(dialog.values()["origin_xyz"], (0.4, -0.2, 0.1))
+
+
+def test_new_link_dialog_accepts_axis_edits_from_3d_handles() -> None:
+    _app()
+    dialog = NewLinkDialog(
+        ["base_link"],
+        default_parent="base_link",
+        selected_count=1,
+    )
+    dialog.set_axis_candidates({"A": (0.0, 0.0, 1.0)})
+    previews: list[object] = []
+    dialog.axisPreviewRequested.connect(previews.append)
+
+    dialog.axis_edit_button.setChecked(True)
+    dialog.set_axis_from_3d((0.12, -0.04, 0.08), (0.0, 3.0, 4.0))
+
+    np.testing.assert_allclose(dialog.values()["origin_xyz"], (0.12, -0.04, 0.08))
+    np.testing.assert_allclose(dialog.values()["axis"], (0.0, 0.6, 0.8))
+    np.testing.assert_allclose(previews[-1], (0.0, 0.6, 0.8))
+    assert "직접 조정 종료" in dialog.axis_edit_button.text()
 
 
 def test_new_link_dialog_supports_negative_axis_and_validates_zero_one_order() -> None:

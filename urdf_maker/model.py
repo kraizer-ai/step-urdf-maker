@@ -12,7 +12,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 import math
 import re
-from typing import Iterable, Mapping, Sequence
+from typing import Any, Iterable, Mapping, Sequence
 
 import numpy as np
 
@@ -146,6 +146,7 @@ class ScenePart:
     color: Sequence[float] | np.ndarray = (0.72, 0.74, 0.78, 1.0)
     link_name: str | None = None
     visible: bool = True
+    feature_axes: list[dict[str, Any]] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         self.id = str(self.id)
@@ -172,6 +173,7 @@ class ScenePart:
         self.color = np.clip(rgba, 0.0, 1.0)
         self.link_name = str(self.link_name) if self.link_name is not None else None
         self.visible = bool(self.visible)
+        self.feature_axes = [dict(item) for item in self.feature_axes]
 
     @property
     def bounds(self) -> tuple[np.ndarray, np.ndarray] | None:
@@ -213,7 +215,18 @@ class JointSpec:
     upper: float | None = None
     effort: float = 100.0
     velocity: float = 1.0
+    damping: float = 0.0
+    friction: float = 0.0
     position: float = 0.0
+    mimic_joint: str | None = None
+    mimic_multiplier: float = 1.0
+    mimic_offset: float = 0.0
+    mimic_auto: bool = False
+    mimic_reverse: bool = False
+    drive_source_joint: str | None = None
+    drive_max_velocity: float = 2.0 * math.pi
+    drive_deadband: float = 0.03
+    drive_reverse: bool = False
 
     def __post_init__(self) -> None:
         self.name = str(self.name)
@@ -238,7 +251,22 @@ class JointSpec:
         self.upper = float(self.upper) if self.upper is not None else None
         self.effort = float(self.effort)
         self.velocity = float(self.velocity)
+        self.damping = float(self.damping)
+        self.friction = float(self.friction)
         self.position = float(self.position)
+        self.mimic_joint = (
+            str(self.mimic_joint).strip() if self.mimic_joint else None
+        )
+        self.mimic_multiplier = float(self.mimic_multiplier)
+        self.mimic_offset = float(self.mimic_offset)
+        self.mimic_auto = bool(self.mimic_auto and self.mimic_joint)
+        self.mimic_reverse = bool(self.mimic_reverse and self.mimic_joint)
+        self.drive_source_joint = (
+            str(self.drive_source_joint).strip() if self.drive_source_joint else None
+        )
+        self.drive_max_velocity = float(self.drive_max_velocity)
+        self.drive_deadband = float(self.drive_deadband)
+        self.drive_reverse = bool(self.drive_reverse and self.drive_source_joint)
 
     def origin_transform(self) -> np.ndarray:
         return transform_matrix(self.origin_xyz, self.origin_rpy)
@@ -357,6 +385,150 @@ class RobotProject:
     def children_of(self, parent_link: str) -> list[JointSpec]:
         return [joint for joint in self.joints if joint.parent == parent_link]
 
+    @staticmethod
+    def _joint_preview_limits(joint: JointSpec) -> tuple[float, float] | None:
+        if joint.type not in {"revolute", "continuous", "prismatic"}:
+            return None
+        lower = joint.lower
+        upper = joint.upper
+        if lower is None or upper is None:
+            if joint.type == "continuous":
+                return -math.pi, math.pi
+            return None
+        if not math.isfinite(lower) or not math.isfinite(upper):
+            return None
+        return float(lower), float(upper)
+
+    def mimic_parameters(self, joint: JointSpec | str) -> tuple[float, float]:
+        """Return the active linear mimic multiplier and offset.
+
+        Auto mode maps the source joint's state 0/1 limits to the dependent
+        joint's state 0/1 limits.  This keeps mixed revolute/prismatic units
+        correct without asking the user to calculate metres per radian.
+        """
+
+        target = self.joint(joint) if isinstance(joint, str) else joint
+        if not target.mimic_joint:
+            return float(target.mimic_multiplier), float(target.mimic_offset)
+        if target.mimic_auto:
+            try:
+                source = self.joint(target.mimic_joint)
+            except KeyError:
+                return float(target.mimic_multiplier), float(target.mimic_offset)
+            source_limits = self._joint_preview_limits(source)
+            target_limits = self._joint_preview_limits(target)
+            if source_limits is not None and target_limits is not None:
+                source_0, source_1 = source_limits
+                target_0, target_1 = target_limits
+                if target.mimic_reverse:
+                    target_0, target_1 = target_1, target_0
+                source_range = source_1 - source_0
+                if abs(source_range) > 1.0e-15:
+                    multiplier = (target_1 - target_0) / source_range
+                    offset = target_0 - multiplier * source_0
+                    return float(multiplier), float(offset)
+        return float(target.mimic_multiplier), float(target.mimic_offset)
+
+    def resolved_joint_positions(
+        self,
+        positions: Mapping[str, float] | None = None,
+        *,
+        zero: bool = False,
+    ) -> dict[str, float]:
+        """Resolve independent and chained mimic joint preview positions."""
+
+        by_name = {joint.name: joint for joint in self.joints}
+        result: dict[str, float] = {}
+        active: set[str] = set()
+
+        def resolve(name: str) -> float:
+            if name in result:
+                return result[name]
+            if name in active:
+                raise ProjectValidationError(
+                    [f"Mimic joint dependency contains a cycle at {name!r}"]
+                )
+            joint = by_name[name]
+            if zero:
+                value = 0.0
+            elif joint.mimic_joint and joint.mimic_joint in by_name:
+                active.add(name)
+                source_value = resolve(joint.mimic_joint)
+                active.remove(name)
+                multiplier, offset = self.mimic_parameters(joint)
+                value = joint.clamp(multiplier * source_value + offset)
+            elif positions is not None and name in positions:
+                value = joint.clamp(float(positions[name]))
+            else:
+                value = joint.clamp(joint.position)
+            result[name] = float(value)
+            return result[name]
+
+        for joint_name in by_name:
+            resolve(joint_name)
+        return result
+
+    def apply_mimic_positions(self) -> dict[str, float]:
+        """Update dependent preview values and return every resolved value."""
+
+        resolved = self.resolved_joint_positions()
+        for joint in self.joints:
+            if joint.mimic_joint:
+                joint.position = resolved[joint.name]
+        return resolved
+
+    def drive_fraction(
+        self,
+        joint: JointSpec | str,
+        positions: Mapping[str, float] | None = None,
+    ) -> float:
+        """Return a wheel drive command in the range -1..1.
+
+        The source lever's lower limit is full reverse, the midpoint is
+        neutral, and the upper limit is full forward.  A small configurable
+        deadband makes it easy to stop exactly at the centre of a UI slider.
+        """
+
+        target = self.joint(joint) if isinstance(joint, str) else joint
+        if not target.drive_source_joint:
+            return 0.0
+        try:
+            source = self.joint(target.drive_source_joint)
+        except KeyError:
+            return 0.0
+        limits = self._joint_preview_limits(source)
+        if limits is None:
+            return 0.0
+        lower, upper = limits
+        span = upper - lower
+        if not math.isfinite(span) or abs(span) <= 1.0e-15:
+            return 0.0
+        resolved = self.resolved_joint_positions(positions)
+        value = resolved.get(source.name, source.position)
+        fraction = 2.0 * (float(value) - lower) / span - 1.0
+        fraction = min(max(fraction, -1.0), 1.0)
+        deadband = min(max(float(target.drive_deadband), 0.0), 0.999999)
+        magnitude = abs(fraction)
+        if magnitude <= deadband:
+            fraction = 0.0
+        else:
+            fraction = math.copysign(
+                (magnitude - deadband) / (1.0 - deadband), fraction
+            )
+        if target.drive_reverse:
+            fraction = -fraction
+        return float(fraction)
+
+    def drive_velocity(
+        self,
+        joint: JointSpec | str,
+        positions: Mapping[str, float] | None = None,
+    ) -> float:
+        """Return the configured continuous-joint angular velocity in rad/s."""
+
+        target = self.joint(joint) if isinstance(joint, str) else joint
+        return self.drive_fraction(target, positions) * float(target.drive_max_velocity)
+
     def create_link(self, name: str, part_ids: Iterable[str] = ()) -> LinkSpec:
         """Create a link and optionally move parts into it."""
 
@@ -448,6 +620,18 @@ class RobotProject:
             if new_parent != new_child:
                 redirected.append(joint)
         self.joints = redirected
+        remaining_joint_names = {joint.name for joint in self.joints}
+        for joint in self.joints:
+            if joint.mimic_joint and joint.mimic_joint not in remaining_joint_names:
+                joint.mimic_joint = None
+                joint.mimic_auto = False
+                joint.mimic_reverse = False
+            if (
+                joint.drive_source_joint
+                and joint.drive_source_joint not in remaining_joint_names
+            ):
+                joint.drive_source_joint = None
+                joint.drive_reverse = False
         for name in source_names:
             del self.links[name]
         if self.root_link in source_set:
@@ -456,8 +640,11 @@ class RobotProject:
 
     def set_joint_position(self, name: str, position: float, clamp: bool = True) -> float:
         joint = self.joint(name)
+        if joint.mimic_joint:
+            return self.apply_mimic_positions()[joint.name]
         value = joint.clamp(position) if clamp else float(position)
         joint.position = value
+        self.apply_mimic_positions()
         return value
 
     def nudge_joint(self, name: str, delta: float, clamp: bool = True) -> float:
@@ -501,6 +688,7 @@ class RobotProject:
             parent_for_child[joint.child] = joint.parent
             by_parent.setdefault(joint.parent, []).append(joint)
 
+        resolved_positions = self.resolved_joint_positions(positions, zero=zero)
         transforms = {root: np.eye(4, dtype=float)}
         queue = [root]
         while queue:
@@ -508,12 +696,7 @@ class RobotProject:
             for joint in by_parent.get(parent, ()):  # deterministic input order
                 if joint.child in transforms:
                     raise ProjectValidationError([f"Kinematic cycle reaches {joint.child!r}"])
-                if zero:
-                    value = 0.0
-                elif positions is not None and joint.name in positions:
-                    value = float(positions[joint.name])
-                else:
-                    value = joint.position
+                value = resolved_positions[joint.name]
                 transforms[joint.child] = transforms[parent] @ joint.transform(value)
                 queue.append(joint.child)
         if len(transforms) != len(self.links):
@@ -632,7 +815,13 @@ class RobotProject:
             values = np.r_[joint.origin_xyz, joint.origin_rpy, joint.axis]
             if not np.all(np.isfinite(values)):
                 errors.append(f"Joint {joint.name!r} contains non-finite coordinates")
-            scalar_values = [joint.position, joint.effort, joint.velocity]
+            scalar_values = [
+                joint.position,
+                joint.effort,
+                joint.velocity,
+                joint.damping,
+                joint.friction,
+            ]
             scalar_values.extend(
                 value for value in (joint.lower, joint.upper) if value is not None
             )
@@ -651,8 +840,106 @@ class RobotProject:
                     joint.lower - 1e-12 <= joint.position <= joint.upper + 1e-12
                 ):
                     errors.append(f"Joint {joint.name!r} preview position is outside its limits")
-            if finite_scalars and (joint.effort < 0 or joint.velocity < 0):
-                errors.append(f"Joint {joint.name!r} effort and velocity must be non-negative")
+            if finite_scalars and (
+                joint.effort < 0
+                or joint.velocity < 0
+                or joint.damping < 0
+                or joint.friction < 0
+            ):
+                errors.append(
+                    f"Joint {joint.name!r} effort, velocity, damping and friction "
+                    "must be non-negative"
+                )
+
+        by_joint_name = {joint.name: joint for joint in self.joints}
+        for joint in self.joints:
+            if not joint.mimic_joint:
+                continue
+            source = by_joint_name.get(joint.mimic_joint)
+            if source is None:
+                errors.append(
+                    f"Joint {joint.name!r} mimics missing joint {joint.mimic_joint!r}"
+                )
+                continue
+            if source is joint:
+                errors.append(f"Joint {joint.name!r} cannot mimic itself")
+            if joint.type not in {"revolute", "continuous", "prismatic"}:
+                errors.append(f"Joint {joint.name!r} cannot be a scalar mimic joint")
+            if source.type not in {"revolute", "continuous", "prismatic"}:
+                errors.append(
+                    f"Joint {joint.name!r} mimics non-scalar joint {source.name!r}"
+                )
+            if not math.isfinite(joint.mimic_multiplier) or not math.isfinite(
+                joint.mimic_offset
+            ):
+                errors.append(
+                    f"Joint {joint.name!r} contains non-finite mimic settings"
+                )
+            if joint.mimic_auto:
+                source_limits = self._joint_preview_limits(source)
+                if (
+                    source_limits is None
+                    or math.isclose(source_limits[0], source_limits[1])
+                ):
+                    errors.append(
+                        f"Joint {joint.name!r} cannot auto-map a zero-range source joint"
+                    )
+
+        # Mimic dependencies are independent of the link tree and need their
+        # own cycle check.
+        for start in by_joint_name:
+            seen: set[str] = set()
+            current = start
+            while current in by_joint_name and by_joint_name[current].mimic_joint:
+                if current in seen:
+                    errors.append(
+                        f"Mimic joint dependency contains a cycle at {current!r}"
+                    )
+                    break
+                seen.add(current)
+                current = str(by_joint_name[current].mimic_joint)
+
+        for joint in self.joints:
+            if not joint.drive_source_joint:
+                continue
+            source = by_joint_name.get(joint.drive_source_joint)
+            if source is None:
+                errors.append(
+                    f"Joint {joint.name!r} drives from missing joint "
+                    f"{joint.drive_source_joint!r}"
+                )
+                continue
+            if source is joint:
+                errors.append(f"Joint {joint.name!r} cannot drive from itself")
+            if joint.type != "continuous":
+                errors.append(
+                    f"Joint {joint.name!r} must be continuous for lever speed drive"
+                )
+            if joint.mimic_joint:
+                errors.append(
+                    f"Joint {joint.name!r} cannot use mimic and lever speed drive together"
+                )
+            if source.type not in {"revolute", "prismatic"}:
+                errors.append(
+                    f"Joint {joint.name!r} drive source {source.name!r} must be revolute or prismatic"
+                )
+            source_limits = self._joint_preview_limits(source)
+            if source_limits is None or math.isclose(
+                source_limits[0], source_limits[1]
+            ):
+                errors.append(
+                    f"Joint {joint.name!r} drive source {source.name!r} requires a finite non-zero range"
+                )
+            if not math.isfinite(joint.drive_max_velocity) or joint.drive_max_velocity <= 0:
+                errors.append(
+                    f"Joint {joint.name!r} drive maximum velocity must be positive and finite"
+                )
+            if not math.isfinite(joint.drive_deadband) or not (
+                0.0 <= joint.drive_deadband < 1.0
+            ):
+                errors.append(
+                    f"Joint {joint.name!r} drive deadband must be in the range 0..<1"
+                )
 
         roots = self.root_candidates()
         if self.links and len(roots) != 1:

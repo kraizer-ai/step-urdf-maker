@@ -8,6 +8,7 @@ binary/ASCII STL, OBJ, PLY, and geometry-oriented COLLADA (DAE).
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
+import json
 import math
 import os
 from pathlib import Path
@@ -681,6 +682,24 @@ def load_urdf(
                 "effort": float(limit.get("effort", "0")),
                 "velocity": float(limit.get("velocity", "0")),
             }
+        dynamics = node.find("dynamics")
+        if dynamics is not None:
+            kwargs.update(
+                {
+                    "damping": float(dynamics.get("damping", "0")),
+                    "friction": float(dynamics.get("friction", "0")),
+                }
+            )
+        mimic = node.find("mimic")
+        if mimic is not None and mimic.get("joint"):
+            kwargs.update(
+                {
+                    "mimic_joint": mimic.get("joint"),
+                    "mimic_multiplier": float(mimic.get("multiplier", "1")),
+                    "mimic_offset": float(mimic.get("offset", "0")),
+                    "mimic_auto": False,
+                }
+            )
         joints.append(
             JointSpec(
                 name=node.get("name") or f"joint_{index + 1}",
@@ -715,7 +734,7 @@ def load_urdf(
         warnings.append(
             "원본 URDF의 collision 형상은 별도로 보존되지 않습니다. 다시 내보내면 visual 메시가 collision으로 사용됩니다."
         )
-    joint_extension_tags = {"mimic", "dynamics", "safety_controller", "calibration"}
+    joint_extension_tags = {"safety_controller", "calibration"}
     has_joint_extensions = any(
         any(joint.find(tag) is not None for tag in joint_extension_tags)
         for joint in robot_node.findall("joint")
@@ -726,7 +745,8 @@ def load_urdf(
     )
     if has_joint_extensions or has_robot_extensions:
         warnings.append(
-            "mimic/dynamics/transmission/Gazebo/ros2_control 등의 확장 태그는 편집 모델에 보존되지 않습니다."
+            "safety_controller/calibration/transmission/Gazebo/ros2_control 등의 "
+            "확장 태그는 편집 모델에 보존되지 않습니다."
         )
     if len(roots) != 1 and links:
         warnings.append(f"URDF has {len(roots)} root candidates; using {root_link!r}")
@@ -947,6 +967,22 @@ def export_urdf(
                 attributes["lower"] = f"{joint.lower:.12g}"
                 attributes["upper"] = f"{joint.upper:.12g}"
             ET.SubElement(node, "limit", **attributes)
+            if joint.damping or joint.friction:
+                ET.SubElement(
+                    node,
+                    "dynamics",
+                    damping=f"{joint.damping:.12g}",
+                    friction=f"{joint.friction:.12g}",
+                )
+        if joint.mimic_joint:
+            multiplier, offset = project.mimic_parameters(joint)
+            ET.SubElement(
+                node,
+                "mimic",
+                joint=joint_names[joint.mimic_joint],
+                multiplier=f"{multiplier:.12g}",
+                offset=f"{offset:.12g}",
+            )
 
     ET.indent(robot_node, space="  ")
     if urdf_filename is None:
@@ -967,11 +1003,30 @@ def export_urdf(
     ET.ElementTree(package_node).write(
         package_dir / "package.xml", encoding="utf-8", xml_declaration=True
     )
+    mechanisms = project.metadata.get("mechanisms")
+    has_mechanism_manifest = isinstance(mechanisms, list) and bool(mechanisms)
+    if has_mechanism_manifest:
+        config_dir = package_dir / "config"
+        config_dir.mkdir(parents=True, exist_ok=True)
+        (config_dir / "mechanisms.json").write_text(
+            json.dumps(
+                {
+                    "format": "step-urdf-maker-mechanisms",
+                    "version": 1,
+                    "robot": safe_robot,
+                    "mechanisms": mechanisms,
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+    install_directories = "urdf meshes config" if has_mechanism_manifest else "urdf meshes"
     (package_dir / "CMakeLists.txt").write_text(
         "cmake_minimum_required(VERSION 3.8)\n"
         f"project({safe_package})\n"
         "find_package(ament_cmake REQUIRED)\n"
-        "install(DIRECTORY urdf meshes DESTINATION share/${PROJECT_NAME})\n"
+        f"install(DIRECTORY {install_directories} DESTINATION share/${{PROJECT_NAME}})\n"
         "ament_package()\n",
         encoding="utf-8",
     )
