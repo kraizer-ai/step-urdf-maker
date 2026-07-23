@@ -6,12 +6,20 @@ import hashlib
 import math
 import time
 import traceback
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
 import numpy as np
 from PySide6.QtCore import QObject, QRunnable, QSettings, QThreadPool, QTimer, Qt, Signal, Slot
-from PySide6.QtGui import QAction, QCloseEvent, QDragEnterEvent, QDropEvent, QKeySequence
+from PySide6.QtGui import (
+    QAction,
+    QCloseEvent,
+    QColor,
+    QDragEnterEvent,
+    QDropEvent,
+    QKeySequence,
+)
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -23,6 +31,7 @@ from PySide6.QtWidgets import (
     QInputDialog,
     QLabel,
     QListWidget,
+    QListWidgetItem,
     QMainWindow,
     QMessageBox,
     QProgressDialog,
@@ -37,6 +46,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ..collision import MeshCollisionChecker
 from ..model import (
     JointSpec,
     ProjectValidationError,
@@ -56,6 +66,15 @@ from .wizards import MechanismWizard, SimulationExportDialog
 
 ROLE_ID = Qt.ItemDataRole.UserRole
 ROLE_JOINT = Qt.ItemDataRole.UserRole + 1
+ROLE_COLLISION_PARTS = Qt.ItemDataRole.UserRole + 2
+COLLISION_DISPLAY_RGB = (0.96, 0.08, 0.04)
+
+
+@dataclass(frozen=True)
+class _CollisionIssue:
+    message: str
+    part_ids: tuple[str, ...] = ()
+    is_collision: bool = True
 
 
 def _stable_part_display_color(
@@ -292,6 +311,13 @@ class MainWindow(QMainWindow):
         self._operator_panel_visibility: tuple[bool, bool, bool] | None = None
         self._demo_started_at = 0.0
         self._demo_last_tick = 0.0
+        self._collision_precheck_count = 0
+        self._collision_precheck_issues_cache: list[_CollisionIssue] = []
+        self._collision_highlight_part_ids: set[str] = set()
+        self._collision_checker: MeshCollisionChecker | None = None
+        self._collision_check_pending = False
+        self._collision_worker_active = False
+        self._collision_rescan_requested = False
         self._new_link_dialog: NewLinkDialog | None = None
         self._pending_mechanism_preset: dict[str, Any] | None = None
         self._demo_timer = QTimer(self)
@@ -591,6 +617,12 @@ class MainWindow(QMainWindow):
         issues_dock.setAllowedAreas(Qt.DockWidgetArea.BottomDockWidgetArea)
         self.issue_list = QListWidget()
         self.issue_list.setMaximumHeight(130)
+        self.issue_list.setToolTip(
+            "충돌 항목을 선택하면 관련 파트를 3D 화면에서 빨간색으로 강조합니다."
+        )
+        self.issue_list.currentItemChanged.connect(
+            self._issue_selection_changed
+        )
         issues_dock.setWidget(self.issue_list)
         self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, issues_dock)
 
@@ -896,6 +928,12 @@ class MainWindow(QMainWindow):
         self._update_assigned_visibility_controls()
         self._dirty = False
         self._compute_scene_scale()
+        self._collision_checker = MeshCollisionChecker(project)
+        self._collision_precheck_count = 0
+        self._collision_precheck_issues_cache = []
+        self._collision_highlight_part_ids = set()
+        self._collision_check_pending = False
+        self._collision_rescan_requested = False
         self._rebuild_all()
         self.viewport.frame_all()
         self._update_title()
@@ -904,6 +942,7 @@ class MainWindow(QMainWindow):
             f"{len(project.parts)}개 형상 · {len(project.links)}개 링크 · {len(project.joints)}개 관절",
             10000,
         )
+        self._schedule_collision_precheck()
 
     def _compute_scene_scale(self) -> None:
         if self.project is None:
@@ -1078,20 +1117,38 @@ class MainWindow(QMainWindow):
             )
         ]
         self.viewport.set_parts(visible_parts)
-        if self.part_colors_action.isChecked():
-            color_overrides: dict[str, tuple[float, float, float, float]] = {}
-            by_id = {part.id: part for part in visible_parts}
-            for part_id, part in by_id.items():
-                color_overrides[part_id] = _stable_part_display_color(
-                    part_id,
-                    float(part.color[3]),
-                )
-            self.viewport.set_color_overrides(color_overrides)
-        else:
-            self.viewport.set_color_overrides({})
+        self._apply_viewport_color_overrides(visible_parts)
         self._update_scene_transforms()
         visible_ids = {part.id for part in visible_parts}
         self.viewport.set_selected([part_id for part_id in selection if part_id in visible_ids])
+
+    def _apply_viewport_color_overrides(
+        self,
+        visible_parts: Iterable[Any] | None = None,
+    ) -> None:
+        """Apply normal display colors plus a red collision alarm override."""
+
+        if self.project is None:
+            return
+        parts = list(visible_parts) if visible_parts is not None else [
+            part
+            for part in self.project.parts.values()
+            if part.visible
+        ]
+        color_overrides: dict[str, tuple[float, float, float, float]] = {}
+        if self.part_colors_action.isChecked():
+            for part in parts:
+                color_overrides[part.id] = _stable_part_display_color(
+                    part.id,
+                    float(part.color[3]),
+                )
+        for part in parts:
+            if part.id in self._collision_highlight_part_ids:
+                color_overrides[part.id] = (
+                    *COLLISION_DISPLAY_RGB,
+                    float(part.color[3]),
+                )
+        self.viewport.set_color_overrides(color_overrides)
 
     def _update_scene_transforms(self) -> None:
         if self.project is None or not self.project.links:
@@ -1215,7 +1272,12 @@ class MainWindow(QMainWindow):
         self.viewport.set_control_animation_playing(False)
         self.viewport.set_animation_playing(True)
         self._demo_timer.start()
-        if drive_targets:
+        if self._collision_precheck_count:
+            self.statusBar().showMessage(
+                f"⚠ 실제 메시 침투 충돌 {self._collision_precheck_count}건 · "
+                "'검증 및 알림'을 확인하세요."
+            )
+        elif drive_targets:
             self.statusBar().showMessage(
                 "자동 재생 중 · 모든 독립 입력과 연결된 바퀴를 자동으로 시험합니다."
             )
@@ -1236,7 +1298,10 @@ class MainWindow(QMainWindow):
         }
         descriptors: list[dict[str, Any]] = []
         for joint in self.project.joints:
-            if joint.name not in mimic_sources | drive_sources:
+            # Operator mode must expose every independently controllable joint.
+            # Mimic followers and velocity-driven targets are omitted because
+            # changing their source already updates them.
+            if joint.mimic_joint or joint.drive_source_joint:
                 continue
             limits = self.project._joint_preview_limits(joint)
             if limits is None or math.isclose(limits[0], limits[1]):
@@ -1250,6 +1315,14 @@ class MainWindow(QMainWindow):
                 roles.append("연동 입력")
             if joint.name in drive_sources:
                 roles.append("주행 레버")
+            if not roles:
+                roles.append(
+                    {
+                        "prismatic": "직선 관절",
+                        "revolute": "회전 관절",
+                        "continuous": "연속 회전",
+                    }.get(joint.type, "관절 조작")
+                )
             descriptors.append(
                 {
                     "name": joint.name,
@@ -1283,7 +1356,7 @@ class MainWindow(QMainWindow):
         if not controls:
             self.viewport.set_control_animation_playing(False)
             self.statusBar().showMessage(
-                "조작할 구동원이 없습니다. mimic 또는 주행 구동 원본 관절을 먼저 설정하세요.",
+                "조작 가능한 독립 가동 관절이 없습니다.",
                 7000,
             )
             return
@@ -1305,9 +1378,15 @@ class MainWindow(QMainWindow):
         if self._demo_drive_joints:
             self._demo_timer.start()
             self._advance_demo_animation()
-        self.statusBar().showMessage(
-            "조작 Play · 3D 화면의 핸들/주행 레버 패널로 직접 시험합니다."
-        )
+        if self._collision_precheck_count:
+            self.statusBar().showMessage(
+                f"⚠ 실제 메시 침투 충돌 {self._collision_precheck_count}건 · "
+                "조작 정지 후 '검증 및 알림'을 확인하세요."
+            )
+        else:
+            self.statusBar().showMessage(
+                f"조작 Play · 3D 화면에서 {len(controls)}개 독립 관절을 직접 시험합니다."
+            )
 
     def _set_operator_control_value(self, joint_name: str, value: float) -> None:
         if self.project is None or self._animation_mode != "control":
@@ -1423,13 +1502,283 @@ class MainWindow(QMainWindow):
             warnings.append(
                 f"미할당 형상 {unassigned_count}개 · URDF 내보내기 전에 링크에 배정해야 합니다."
             )
+        if not errors:
+            for issue in self._collision_precheck_issues_cache:
+                if issue.is_collision:
+                    self._add_collision_issue(issue)
+                else:
+                    warnings.append(issue.message)
+            if self._collision_check_pending:
+                warnings.append("실제 삼각형 메시 충돌 검사 중…")
         self._add_issues(warnings, prefix="알림: ")
-        if not errors and not warnings:
+        if (
+            not errors
+            and not warnings
+            and not self._collision_precheck_issues_cache
+        ):
             self.issue_list.addItem("검증 통과")
 
     def _add_issues(self, messages: Iterable[str], prefix: str = "") -> None:
         for message in messages:
             self.issue_list.addItem(prefix + str(message))
+
+    def _add_collision_issue(self, issue: _CollisionIssue) -> None:
+        item = QListWidgetItem(issue.message)
+        item.setForeground(QColor(224, 45, 45))
+        font = item.font()
+        font.setBold(True)
+        item.setFont(font)
+        if issue.part_ids:
+            item.setData(ROLE_COLLISION_PARTS, issue.part_ids)
+            item.setToolTip(
+                "선택하면 이 충돌에 관련된 두 파트를 3D 화면에서 "
+                "빨간색으로 강조합니다."
+            )
+        self.issue_list.addItem(item)
+
+    def _issue_selection_changed(
+        self,
+        current: QListWidgetItem | None,
+        _previous: QListWidgetItem | None,
+    ) -> None:
+        raw_part_ids = (
+            current.data(ROLE_COLLISION_PARTS) if current is not None else None
+        )
+        if isinstance(raw_part_ids, (list, tuple, set)):
+            part_ids = {
+                str(part_id)
+                for part_id in raw_part_ids
+                if self.project is not None and str(part_id) in self.project.parts
+            }
+        else:
+            part_ids = set()
+        if part_ids == self._collision_highlight_part_ids:
+            return
+        self._collision_highlight_part_ids = part_ids
+        self._apply_viewport_color_overrides()
+        if part_ids:
+            self.statusBar().showMessage(
+                "충돌 항목 선택 · 관련 파트를 빨간색으로 강조했습니다.",
+                7000,
+            )
+
+    def _format_collision_precheck_messages(
+        self,
+        current: Iterable[Any],
+        motion: Iterable[Any],
+        omitted: int,
+    ) -> list[_CollisionIssue]:
+        """Format exact mesh penetration results for the validation panel."""
+
+        if self.project is None:
+            return []
+        adjacent = {
+            frozenset((joint.parent, joint.child)) for joint in self.project.joints
+        }
+        current_by_parts: dict[frozenset[str], Any] = {}
+        for candidate in current:
+            if frozenset((candidate.link_a, candidate.link_b)) in adjacent:
+                continue
+            key = frozenset((candidate.part_a, candidate.part_b))
+            current_by_parts.setdefault(key, candidate)
+
+        motion_by_parts: dict[frozenset[str], Any] = {}
+        for finding in motion:
+            candidate = finding.candidate
+            key = frozenset((candidate.part_a, candidate.part_b))
+            motion_by_parts.setdefault(key, finding)
+
+        total = len(current_by_parts) + len(
+            set(motion_by_parts) - set(current_by_parts)
+        )
+        self._collision_precheck_count = total
+        issues: list[_CollisionIssue] = []
+        if total:
+            issues.append(
+                _CollisionIssue(
+                    f"⚠ 메시 충돌 {total}건 · 아래 항목을 선택하면 "
+                    "관련 파트를 빨간색으로 표시합니다."
+                )
+            )
+        displayed = 0
+        for candidate in list(current_by_parts.values())[:50]:
+            part_a = self.project.parts[candidate.part_a].name
+            part_b = self.project.parts[candidate.part_b].name
+            issues.append(
+                _CollisionIssue(
+                    f"⚠ 충돌 [현재 자세] {candidate.link_a} ↔ "
+                    f"{candidate.link_b} · {part_a} ({candidate.part_a}) ↔ "
+                    f"{part_b} ({candidate.part_b})",
+                    (candidate.part_a, candidate.part_b),
+                )
+            )
+            displayed += 1
+        for part_key, finding in motion_by_parts.items():
+            if displayed >= 50:
+                break
+            if part_key in current_by_parts:
+                continue
+            if finding.joint_name is None:
+                joint_name = "전체 가동 관절"
+                sample = f"동시 {finding.position * 100.0:.0f}%"
+            else:
+                joint = self.project.joint(finding.joint_name)
+                joint_name = joint.name
+                if joint.type == "prismatic":
+                    sample = f"{finding.position * 1000.0:.1f} mm"
+                else:
+                    sample = f"{math.degrees(finding.position):.1f}°"
+            candidate = finding.candidate
+            part_a = self.project.parts[candidate.part_a].name
+            part_b = self.project.parts[candidate.part_b].name
+            issues.append(
+                _CollisionIssue(
+                    f"⚠ 충돌 [가동 범위] {candidate.link_a} ↔ "
+                    f"{candidate.link_b} · {joint_name}={sample} · "
+                    f"{part_a} ({candidate.part_a}) ↔ "
+                    f"{part_b} ({candidate.part_b})",
+                    (candidate.part_a, candidate.part_b),
+                )
+            )
+            displayed += 1
+        hidden = total - displayed
+        if hidden > 0:
+            issues.append(_CollisionIssue(f"⚠ 충돌 {hidden}건이 더 있습니다."))
+        if omitted:
+            issues.append(
+                _CollisionIssue(
+                    f"관절이 많아 뒤의 {omitted}개는 가동 범위 샘플 "
+                    "검사에서 제외됐습니다.",
+                    is_collision=False,
+                )
+            )
+        if total:
+            issues.append(
+                _CollisionIssue(
+                    "충돌 결과는 OBB 후보를 실제 삼각형 메시 침투로 "
+                    "다시 검증한 결과입니다.",
+                    is_collision=False,
+                )
+            )
+        return issues
+
+    def _schedule_collision_precheck(self) -> None:
+        """Run dense mesh collision checks without freezing a large scene."""
+
+        if self.project is None:
+            return
+        if self.project.validate(check_names=False):
+            self._collision_precheck_count = 0
+            self._collision_precheck_issues_cache = []
+            self._collision_highlight_part_ids = set()
+            self._apply_viewport_color_overrides()
+            self._collision_check_pending = False
+            self._refresh_issues()
+            return
+        if self._collision_checker is None:
+            self._collision_checker = MeshCollisionChecker(self.project)
+        self._collision_highlight_part_ids = set()
+        self._apply_viewport_color_overrides()
+        if self._collision_worker_active:
+            self._collision_rescan_requested = True
+            self._collision_check_pending = True
+            self._refresh_issues()
+            return
+
+        project = self.project
+        checker = self._collision_checker
+        tolerance = max(self._scene_scale * 1.0e-6, 1.0e-7)
+
+        def operation() -> tuple[list[Any], list[Any], int]:
+            return checker.sampled_self_collisions(
+                samples_per_joint=3,
+                max_joints=32,
+                contact_tolerance=tolerance,
+            )
+
+        def apply_result(result: tuple[list[Any], list[Any], int]) -> None:
+            current, motion, omitted = result
+            self._collision_highlight_part_ids = set()
+            self._collision_precheck_issues_cache = (
+                self._format_collision_precheck_messages(
+                    current,
+                    motion,
+                    omitted,
+                )
+            )
+            self._collision_check_pending = False
+            self._apply_viewport_color_overrides()
+            self._refresh_issues()
+            if self._collision_precheck_count:
+                self.statusBar().showMessage(
+                    f"실제 메시 충돌 검사 완료 · "
+                    f"침투 충돌 {self._collision_precheck_count}건",
+                    10000,
+                )
+            else:
+                self.statusBar().showMessage(
+                    "실제 메시 충돌 검사 완료 · 침투 충돌 없음",
+                    10000,
+                )
+
+        triangle_count = sum(
+            len(part.triangles) for part in project.parts.values()
+        )
+        if triangle_count <= 50000:
+            try:
+                apply_result(operation())
+            except (ProjectValidationError, ValueError, np.linalg.LinAlgError):
+                self._collision_precheck_count = 0
+                self._collision_highlight_part_ids = set()
+                self._apply_viewport_color_overrides()
+                self._collision_precheck_issues_cache = [
+                    _CollisionIssue(
+                        "실제 메시 충돌 검사를 실행하지 못했습니다.",
+                        is_collision=False,
+                    )
+                ]
+                self._refresh_issues()
+            return
+
+        self._collision_worker_active = True
+        self._collision_check_pending = True
+        self._refresh_issues()
+        worker = _FunctionWorker(operation)
+        self._workers.add(worker)
+
+        def cleanup() -> None:
+            self._workers.discard(worker)
+            self._collision_worker_active = False
+
+        def success(result: tuple[list[Any], list[Any], int]) -> None:
+            cleanup()
+            if self.project is project:
+                apply_result(result)
+            if self._collision_rescan_requested:
+                self._collision_rescan_requested = False
+                self._schedule_collision_precheck()
+
+        def failure(_details: str) -> None:
+            cleanup()
+            if self.project is project:
+                self._collision_check_pending = False
+                self._collision_precheck_count = 0
+                self._collision_highlight_part_ids = set()
+                self._apply_viewport_color_overrides()
+                self._collision_precheck_issues_cache = [
+                    _CollisionIssue(
+                        "실제 메시 충돌 검사를 실행하지 못했습니다.",
+                        is_collision=False,
+                    )
+                ]
+                self._refresh_issues()
+            if self._collision_rescan_requested:
+                self._collision_rescan_requested = False
+                self._schedule_collision_precheck()
+
+        worker.signals.finished.connect(success)
+        worker.signals.failed.connect(failure)
+        QThreadPool.globalInstance().start(worker)
 
     # ---------- selection ----------
     def _walk_part_tree(self) -> Iterable[QTreeWidgetItem]:
@@ -2500,6 +2849,7 @@ class MainWindow(QMainWindow):
         self._mark_dirty()
         self._rebuild_all(preserve_selection=False)
         self._select_link_item(link_name)
+        self._schedule_collision_precheck()
 
     def _prune_mechanism_metadata(self) -> None:
         if self.project is None:
@@ -2607,7 +2957,7 @@ class MainWindow(QMainWindow):
         self._rebuild_link_tree()
         self._refresh_editor()
         self._update_scene_transforms()
-        self._refresh_issues()
+        self._schedule_collision_precheck()
 
     def set_current_joint_position(self, value: float) -> None:
         if self.project is None or self.current_joint is None:
@@ -2737,7 +3087,8 @@ class MainWindow(QMainWindow):
             QMessageBox.information(
                 self,
                 "작업 진행 중",
-                "STEP/URDF 로딩이 끝난 뒤 종료해 주세요. 네이티브 작업을 안전하게 정리하고 있습니다.",
+                "STEP/URDF 로딩 또는 메시 충돌 검사가 끝난 뒤 종료해 주세요. "
+                "네이티브 작업을 안전하게 정리하고 있습니다.",
             )
             event.ignore()
             return

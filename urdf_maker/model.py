@@ -135,6 +135,44 @@ def apply_transform(vertices: np.ndarray, matrix: np.ndarray) -> np.ndarray:
     return points @ transform[:3, :3].T + transform[:3, 3]
 
 
+def _oriented_boxes_overlap(
+    center_a: np.ndarray,
+    axes_a: np.ndarray,
+    half_a: np.ndarray,
+    center_b: np.ndarray,
+    axes_b: np.ndarray,
+    half_b: np.ndarray,
+    *,
+    contact_tolerance: float,
+) -> bool:
+    """Test two oriented boxes with the separating-axis theorem."""
+
+    axes: list[np.ndarray] = [
+        axes_a[:, index] for index in range(3)
+    ] + [axes_b[:, index] for index in range(3)]
+    for axis_a in (axes_a[:, index] for index in range(3)):
+        for axis_b in (axes_b[:, index] for index in range(3)):
+            cross = np.cross(axis_a, axis_b)
+            norm = float(np.linalg.norm(cross))
+            if norm > 1.0e-10:
+                axes.append(cross / norm)
+
+    center_delta = center_b - center_a
+    for axis in axes:
+        norm = float(np.linalg.norm(axis))
+        if norm <= 1.0e-12:
+            continue
+        direction = axis / norm
+        radius_a = float(np.sum(half_a * np.abs(axes_a.T @ direction)))
+        radius_b = float(np.sum(half_b * np.abs(axes_b.T @ direction)))
+        separation = abs(float(np.dot(center_delta, direction)))
+        # Mere face/edge contact is allowed.  Every separating axis must have
+        # positive penetration beyond the small numerical tolerance.
+        if separation >= radius_a + radius_b - contact_tolerance:
+            return False
+    return True
+
+
 @dataclass
 class ScenePart:
     """One selectable triangle mesh in the zero-pose world frame."""
@@ -180,6 +218,25 @@ class ScenePart:
         if not len(self.vertices_zero):
             return None
         return self.vertices_zero.min(axis=0), self.vertices_zero.max(axis=0)
+
+
+@dataclass(frozen=True)
+class CollisionCandidate:
+    """A conservative overlap between two rigid part bounding boxes."""
+
+    link_a: str
+    link_b: str
+    part_a: str
+    part_b: str
+
+
+@dataclass(frozen=True)
+class CollisionSweepFinding:
+    """A new collision candidate found at one sampled joint position."""
+
+    candidate: CollisionCandidate
+    joint_name: str | None
+    position: float
 
 
 @dataclass
@@ -764,6 +821,165 @@ class RobotProject:
                 result[identifier] = part.vertices_zero.copy()
         return result
 
+    def self_collision_candidates(
+        self,
+        positions: Mapping[str, float] | None = None,
+        *,
+        contact_tolerance: float = 1.0e-7,
+    ) -> list[CollisionCandidate]:
+        """Return conservative inter-link collisions at one robot pose.
+
+        Each part is represented by its zero-pose axis-aligned bounds transformed
+        as an oriented bounding box.  This is deliberately a fast broad-phase
+        check: it can report a candidate for concave meshes that do not actually
+        touch, but it will not stall interactive URDF loading on dense CAD meshes.
+        Parts on the same rigid link are never compared.
+        """
+
+        bounds_cache = {
+            part.id: part.bounds for part in self.parts.values()
+        }
+        return self._self_collision_candidates(
+            positions,
+            contact_tolerance=max(float(contact_tolerance), 0.0),
+            bounds_cache=bounds_cache,
+        )
+
+    def _self_collision_candidates(
+        self,
+        positions: Mapping[str, float] | None,
+        *,
+        contact_tolerance: float,
+        bounds_cache: Mapping[str, tuple[np.ndarray, np.ndarray] | None],
+    ) -> list[CollisionCandidate]:
+        if not self.links or not self.parts:
+            return []
+        zero_fk = self.forward_kinematics(zero=True)
+        current_fk = self.forward_kinematics(positions)
+        deltas = {
+            name: current_fk[name] @ np.linalg.inv(zero_fk[name])
+            for name in current_fk
+        }
+        boxes: list[
+            tuple[str, str, np.ndarray, np.ndarray, np.ndarray, np.ndarray]
+        ] = []
+        for part in self.parts.values():
+            link_name = part.link_name
+            bounds = bounds_cache.get(part.id)
+            if link_name not in deltas or bounds is None:
+                continue
+            lower, upper = bounds
+            center_zero = (lower + upper) * 0.5
+            half_size = np.maximum((upper - lower) * 0.5, 0.0)
+            delta = deltas[link_name]
+            center = delta[:3, :3] @ center_zero + delta[:3, 3]
+            axes = delta[:3, :3]
+            world_half = np.abs(axes) @ half_size
+            boxes.append(
+                (part.id, link_name, center, axes, half_size, world_half)
+            )
+
+        candidates: list[CollisionCandidate] = []
+        for index, first in enumerate(boxes):
+            part_a, link_a, center_a, axes_a, half_a, world_half_a = first
+            for (
+                part_b,
+                link_b,
+                center_b,
+                axes_b,
+                half_b,
+                world_half_b,
+            ) in boxes[index + 1 :]:
+                if link_a == link_b:
+                    continue
+                if np.any(
+                    np.abs(center_b - center_a)
+                    >= world_half_a + world_half_b - contact_tolerance
+                ):
+                    continue
+                if not _oriented_boxes_overlap(
+                    center_a,
+                    axes_a,
+                    half_a,
+                    center_b,
+                    axes_b,
+                    half_b,
+                    contact_tolerance=contact_tolerance,
+                ):
+                    continue
+                candidates.append(
+                    CollisionCandidate(link_a, link_b, part_a, part_b)
+                )
+        return candidates
+
+    def sampled_self_collision_candidates(
+        self,
+        *,
+        samples_per_joint: int = 3,
+        max_joints: int = 32,
+        contact_tolerance: float = 1.0e-7,
+    ) -> tuple[list[CollisionCandidate], list[CollisionSweepFinding], int]:
+        """Check the current pose and samples across every scalar joint range.
+
+        The return value is ``(current, motion, omitted_joint_count)``.  Motion
+        findings contain only part pairs that were not already overlapping at
+        the current pose, which suppresses the normal contact around assembled
+        joints while still identifying newly introduced interference.
+        """
+
+        sample_count = max(int(samples_per_joint), 2)
+        joint_limit = max(int(max_joints), 0)
+        bounds_cache = {
+            part.id: part.bounds for part in self.parts.values()
+        }
+        current = self._self_collision_candidates(
+            None,
+            contact_tolerance=contact_tolerance,
+            bounds_cache=bounds_cache,
+        )
+        current_keys = {
+            frozenset((candidate.part_a, candidate.part_b)) for candidate in current
+        }
+        movable: list[tuple[JointSpec, tuple[float, float]]] = []
+        for joint in self.joints:
+            if joint.mimic_joint:
+                continue
+            limits = self._joint_preview_limits(joint)
+            if limits is None or math.isclose(limits[0], limits[1]):
+                continue
+            movable.append((joint, limits))
+        omitted = max(0, len(movable) - joint_limit)
+        movable = movable[:joint_limit]
+        base_positions = {
+            joint.name: float(joint.position) for joint in self.joints
+        }
+        findings: list[CollisionSweepFinding] = []
+        reported: set[tuple[frozenset[str], str]] = set()
+        for joint, (lower, upper) in movable:
+            for position in np.linspace(lower, upper, sample_count):
+                if math.isclose(float(position), float(joint.position)):
+                    continue
+                positions = dict(base_positions)
+                positions[joint.name] = float(position)
+                for candidate in self._self_collision_candidates(
+                    positions,
+                    contact_tolerance=contact_tolerance,
+                    bounds_cache=bounds_cache,
+                ):
+                    part_key = frozenset((candidate.part_a, candidate.part_b))
+                    report_key = (part_key, joint.name)
+                    if part_key in current_keys or report_key in reported:
+                        continue
+                    reported.add(report_key)
+                    findings.append(
+                        CollisionSweepFinding(
+                            candidate,
+                            joint.name,
+                            float(position),
+                        )
+                    )
+        return current, findings, omitted
+
     def validate(
         self,
         *,
@@ -1006,6 +1222,8 @@ class RobotProject:
 
 
 __all__ = [
+    "CollisionCandidate",
+    "CollisionSweepFinding",
     "JointSpec",
     "LinkSpec",
     "ProjectValidationError",

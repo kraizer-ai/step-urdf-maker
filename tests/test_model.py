@@ -26,6 +26,27 @@ def triangle_part(identifier="part", link_name=None, offset=(0.0, 0.0, 0.0)):
     )
 
 
+def box_part(identifier, link_name, lower, upper):
+    lower = np.asarray(lower, dtype=float)
+    upper = np.asarray(upper, dtype=float)
+    vertices = np.asarray(
+        [
+            (x, y, z)
+            for x in (lower[0], upper[0])
+            for y in (lower[1], upper[1])
+            for z in (lower[2], upper[2])
+        ],
+        dtype=float,
+    )
+    return ScenePart(
+        identifier,
+        identifier,
+        vertices,
+        np.empty((0, 3), dtype=np.int64),
+        link_name=link_name,
+    )
+
+
 class TransformTests(unittest.TestCase):
     def test_rpy_uses_urdf_fixed_axis_order(self):
         rotation = rpy_matrix((0.0, 0.0, math.pi / 2.0))
@@ -259,6 +280,67 @@ class ProjectKinematicsTests(unittest.TestCase):
 
         project.joint("wheel_joint").drive_reverse = True
         self.assertAlmostEqual(project.drive_velocity("wheel_joint"), -12.0)
+
+    def test_self_collision_candidates_ignore_touching_and_same_link_parts(self):
+        base_one = box_part("base_one", "base", (0.0, 0.0, 0.0), (1.0, 1.0, 1.0))
+        base_two = box_part("base_two", "base", (0.2, 0.2, 0.2), (0.8, 0.8, 0.8))
+        touching = box_part("touching", "tip", (1.0, 0.0, 0.0), (2.0, 1.0, 1.0))
+        project = RobotProject(
+            "contact",
+            parts=[base_one, base_two, touching],
+            links=[
+                LinkSpec("base", [base_one.id, base_two.id]),
+                LinkSpec("tip", [touching.id]),
+            ],
+            joints=[JointSpec("tip_mount", "fixed", "base", "tip")],
+            root_link="base",
+        )
+
+        self.assertEqual(project.self_collision_candidates(), [])
+
+    def test_sampled_self_collision_finds_new_prismatic_interference(self):
+        moving = box_part("moving_part", "moving", (0.0, 0.0, 0.0), (0.2, 0.2, 0.2))
+        obstacle = box_part(
+            "obstacle_part",
+            "obstacle",
+            (0.9, 0.0, 0.0),
+            (1.1, 0.2, 0.2),
+        )
+        project = RobotProject(
+            "collision_sweep",
+            parts=[moving, obstacle],
+            links=[
+                LinkSpec("base"),
+                LinkSpec("moving", [moving.id]),
+                LinkSpec("obstacle", [obstacle.id]),
+            ],
+            joints=[
+                JointSpec(
+                    "slide",
+                    "prismatic",
+                    "base",
+                    "moving",
+                    axis=(1.0, 0.0, 0.0),
+                    lower=0.0,
+                    upper=1.0,
+                ),
+                JointSpec("obstacle_mount", "fixed", "base", "obstacle"),
+            ],
+            root_link="base",
+        )
+
+        current, motion, omitted = project.sampled_self_collision_candidates()
+
+        self.assertEqual(current, [])
+        self.assertEqual(omitted, 0)
+        self.assertTrue(
+            any(
+                finding.joint_name == "slide"
+                and {finding.candidate.link_a, finding.candidate.link_b}
+                == {"moving", "obstacle"}
+                for finding in motion
+            )
+        )
 
 
 class ProjectEditingTests(unittest.TestCase):

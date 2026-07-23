@@ -9,7 +9,9 @@ from PySide6.QtWidgets import QApplication, QDialog, QDockWidget, QMessageBox
 from urdf_maker.model import JointSpec, LinkSpec, RobotProject, ScenePart
 from urdf_maker.ui.editors import NewLinkDialog
 from urdf_maker.ui.main_window import (
+    COLLISION_DISPLAY_RGB,
     MainWindow,
+    ROLE_COLLISION_PARTS,
     ROLE_ID,
     _cad_joint_axis_candidates,
     _geometry_principal_axes,
@@ -35,6 +37,41 @@ def _part(identifier: str, offset: float) -> ScenePart:
         identifier,
         vertices,
         np.asarray(((0, 1, 2),), dtype=np.int64),
+    )
+
+
+def _box_part(
+    identifier: str,
+    link_name: str,
+    lower: tuple[float, float, float],
+    upper: tuple[float, float, float],
+) -> ScenePart:
+    low = np.asarray(lower, dtype=float)
+    high = np.asarray(upper, dtype=float)
+    x0, y0, z0 = low
+    x1, y1, z1 = high
+    vertices = np.asarray(
+        (
+            (x0, y0, z0), (x1, y0, z0),
+            (x1, y1, z0), (x0, y1, z0),
+            (x0, y0, z1), (x1, y0, z1),
+            (x1, y1, z1), (x0, y1, z1),
+        )
+    )
+    triangles = np.asarray(
+        (
+            (0, 2, 1), (0, 3, 2), (4, 5, 6), (4, 6, 7),
+            (0, 1, 5), (0, 5, 4), (1, 2, 6), (1, 6, 5),
+            (2, 3, 7), (2, 7, 6), (3, 0, 4), (3, 4, 7),
+        ),
+        dtype=np.int64,
+    )
+    return ScenePart(
+        identifier,
+        identifier,
+        vertices,
+        triangles,
+        link_name=link_name,
     )
 
 
@@ -485,7 +522,7 @@ def test_play_integrates_wheel_speed_from_manual_direction_lever() -> None:
         app.processEvents()
 
 
-def test_control_play_exposes_only_mimic_and_drive_source_joints() -> None:
+def test_control_play_exposes_all_independent_movable_joints() -> None:
     app = _app()
     part_names = ["base", "handle", "knuckle", "lever", "wheel"]
     parts = [_part(f"{name}_part", index * 0.2) for index, name in enumerate(part_names)]
@@ -551,6 +588,162 @@ def test_control_play_exposes_only_mimic_and_drive_source_joints() -> None:
         window._set_control_playing(False)
         assert math.isclose(project.joint("handle_joint").position, 0.0)
         assert math.isclose(project.joint("knuckle_joint").position, 0.0)
+    finally:
+        window._dirty = False
+        window.viewport._vtk_widget.Finalize()
+        window.close()
+        window.deleteLater()
+        app.processEvents()
+
+
+def test_control_play_exposes_six_plain_prismatic_joints() -> None:
+    app = _app()
+    parts = [_part("base_part", 0.0)] + [
+        _part(f"moving_{index}_part", index * 0.2) for index in range(6)
+    ]
+    joints = [
+        JointSpec(
+            f"moving_{index}_joint",
+            "prismatic",
+            "base",
+            f"moving_{index}",
+            lower=0.0,
+            upper=0.1 * (index + 1),
+        )
+        for index in range(6)
+    ]
+    project = RobotProject(
+        "six_operator_controls",
+        parts=parts,
+        links=[LinkSpec("base", [parts[0].id])]
+        + [
+            LinkSpec(f"moving_{index}", [parts[index + 1].id])
+            for index in range(6)
+        ],
+        joints=joints,
+        root_link="base",
+    )
+    window = MainWindow()
+    try:
+        window._set_project(project, None)
+
+        descriptors = window._operator_control_descriptors()
+        assert [item["name"] for item in descriptors] == [
+            f"moving_{index}_joint" for index in range(6)
+        ]
+        assert {item["role"] for item in descriptors} == {"직선 관절"}
+
+        window._set_control_playing(True)
+        assert window._animation_mode == "control"
+        assert len(window.viewport._operator_controls) == 6
+        window.viewport._operator_controls["moving_5_joint"]["slider"].setValue(
+            1000
+        )
+        assert math.isclose(project.joint("moving_5_joint").position, 0.6)
+        window._set_control_playing(False)
+        assert math.isclose(project.joint("moving_5_joint").position, 0.0)
+    finally:
+        window._dirty = False
+        window.viewport._vtk_widget.Finalize()
+        window.close()
+        window.deleteLater()
+        app.processEvents()
+
+
+def test_collision_precheck_is_shown_in_validation_panel() -> None:
+    app = _app()
+    moving = _box_part(
+        "moving_part",
+        "moving",
+        (0.0, 0.0, 0.0),
+        (0.2, 0.2, 0.2),
+    )
+    obstacle = _box_part(
+        "obstacle_part",
+        "obstacle",
+        (0.9, 0.0, 0.0),
+        (1.1, 0.2, 0.2),
+    )
+    project = RobotProject(
+        "collision_warning",
+        parts=[moving, obstacle],
+        links=[
+            LinkSpec("base"),
+            LinkSpec("moving", [moving.id]),
+            LinkSpec("obstacle", [obstacle.id]),
+        ],
+        joints=[
+            JointSpec(
+                "slide",
+                "prismatic",
+                "base",
+                "moving",
+                axis=(1.0, 0.0, 0.0),
+                lower=0.0,
+                upper=1.0,
+            ),
+            JointSpec("obstacle_mount", "fixed", "base", "obstacle"),
+        ],
+        root_link="base",
+    )
+    window = MainWindow()
+    try:
+        window._set_project(project, None)
+
+        issue_items = [
+            window.issue_list.item(index)
+            for index in range(window.issue_list.count())
+        ]
+        assert any(
+            "⚠ 충돌 [가동 범위]" in item.text()
+            and "moving ↔ obstacle" in item.text()
+            for item in issue_items
+        )
+        assert window._collision_precheck_count == 1
+        collision_items = [
+            item
+            for item in issue_items
+            if item.data(ROLE_COLLISION_PARTS) is not None
+        ]
+        assert len(collision_items) == 1
+        collision_item = collision_items[0]
+        collision_text_color = collision_item.foreground().color()
+        assert collision_text_color.red() > 200
+        assert collision_text_color.green() < 100
+        assert collision_item.font().bold()
+        assert window._collision_highlight_part_ids == set()
+        for part in (moving, obstacle):
+            assert window.viewport._color_overrides[part.id][:3] != (
+                COLLISION_DISPLAY_RGB
+            )
+
+        window.issue_list.setCurrentItem(collision_item)
+
+        assert window._collision_highlight_part_ids == {moving.id, obstacle.id}
+        for part in (moving, obstacle):
+            assert window.viewport._color_overrides[part.id][:3] == (
+                COLLISION_DISPLAY_RGB
+            )
+
+        normal_item = next(
+            item
+            for item in issue_items
+            if item.data(ROLE_COLLISION_PARTS) is None
+            and not item.text().startswith("⚠")
+        )
+        window.issue_list.setCurrentItem(normal_item)
+        assert window._collision_highlight_part_ids == set()
+
+        window.issue_list.setCurrentItem(collision_item)
+        project.joint("slide").upper = 0.5
+        window._schedule_collision_precheck()
+
+        assert window._collision_precheck_count == 0
+        assert window._collision_highlight_part_ids == set()
+        for part in (moving, obstacle):
+            assert window.viewport._color_overrides[part.id][:3] != (
+                COLLISION_DISPLAY_RGB
+            )
     finally:
         window._dirty = False
         window.viewport._vtk_widget.Finalize()

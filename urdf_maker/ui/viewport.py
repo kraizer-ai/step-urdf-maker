@@ -397,7 +397,7 @@ else:
             self._control_play_button.setObjectName("viewportControlPlayButton")
             self._control_play_button.setCheckable(True)
             self._control_play_button.setToolTip(
-                "설정 패널을 숨기고 핸들·주행 레버 등 실제 구동원만 조작합니다."
+                "설정 패널을 숨기고 모든 독립 가동 관절을 직접 조작합니다."
             )
             self._control_play_button.setStyleSheet(
                 "QPushButton#viewportControlPlayButton {"
@@ -442,7 +442,7 @@ else:
             operator_title = QLabel("조작 Play · 입력 패널")
             operator_title.setStyleSheet("font-weight: 700; font-size: 13px;")
             operator_layout.addWidget(operator_title)
-            self._operator_hint = QLabel("핸들과 주행 레버를 직접 조작하세요.")
+            self._operator_hint = QLabel("아래 슬라이더로 가동 관절을 직접 조작하세요.")
             self._operator_hint.setStyleSheet("color: #b9c6cf; font-size: 11px;")
             operator_layout.addWidget(self._operator_hint)
             self._operator_rows_layout = QVBoxLayout()
